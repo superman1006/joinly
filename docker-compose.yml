@@ -1,0 +1,25 @@
+services:
+  joinly:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: joinly:local
+    env_file:
+      - .env
+    # 客户端模式：直接加入会议
+    # 将 MEETING_URL 替换为真实会议链接，或直接在 command 中硬写
+    command: >
+      --client "${MEETING_URL:-https://vc.feishu.cn/j/905158212}"
+      --name "${JOINLY_NAME:-AI助手}"
+    # 若只想启动 MCP 服务端（不主动入会），把 command 替换为：
+    # command: --port 8000
+    ports:
+      - "8000:8000"
+    # 模型缓存持久化，避免每次重建镜像都重新下载
+    volumes:
+      - joinly_cache:/home/app/.cache
+    restart: unless-stopped
+    shm_size: "256m"
+
+volumes:
+  joinly_cache:
