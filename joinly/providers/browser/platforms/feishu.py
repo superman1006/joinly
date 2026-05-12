@@ -7,12 +7,34 @@ from typing import Any, ClassVar
 from playwright.async_api import Page
 
 from joinly.providers.browser.platforms.base import BaseBrowserPlatformController
+from joinly.settings import get_settings
 from joinly.types import MeetingChatHistory, MeetingChatMessage, MeetingParticipant
 
 logger = logging.getLogger(__name__)
 
 # 飞书视频会议 Web 端的消息最大字符数限制
 _MAX_MESSAGE_LENGTH = 1000
+
+# 按钮 accessible-name 匹配正则（中英双语）
+_JOIN_RE = re.compile(
+    r"加入会议|立即加入|join\s*meeting|join\s*now|enter", re.IGNORECASE
+)
+_LEAVE_RE = re.compile(r"^(?:离开|结束会议|leave|end)", re.IGNORECASE)
+_LEAVE_CONFIRM_RE = re.compile(r"离开|leave|确认|confirm|ok", re.IGNORECASE)
+_MIC_RE = re.compile(r"麦克风|mic|mute|microphone", re.IGNORECASE)
+_UNMUTE_RE = re.compile(r"开启麦克风|取消静音|unmute|turn on mic", re.IGNORECASE)
+_CHAT_RE = re.compile(r"^聊天$|^chat$", re.IGNORECASE)
+_MEMBERS_RE = re.compile(r"参会成员|成员|参与者|members|participants", re.IGNORECASE)
+_SHARE_RE = re.compile(r"共享屏幕|屏幕共享|share screen|present", re.IGNORECASE)
+_STOP_SHARE_RE = re.compile(r"停止共享|stop sharing|stop present", re.IGNORECASE)
+
+# 姓名输入框 placeholder 正则
+_NAME_PLACEHOLDER_RE = re.compile(r"名字|name|your name|enter.*name", re.IGNORECASE)
+
+# 密码输入框 placeholder 正则
+_PASSCODE_PLACEHOLDER_RE = re.compile(
+    r"密码|passcode|password|meeting\s*id", re.IGNORECASE
+)
 
 
 class FeishuBrowserPlatformController(BaseBrowserPlatformController):
@@ -40,7 +62,7 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         page: Page,
         url: str,
         name: str,
-        passcode: str | None = None,  # noqa: ARG002
+        passcode: str | None = None,
     ) -> None:
         """加入飞书视频会议。
 
@@ -52,32 +74,63 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         """
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-        # 等待入会前大厅页面加载完成
-        await page.wait_for_timeout(2000)
+        # 等待大厅页面 JS 初始化完成
+        await page.wait_for_timeout(3000)
 
-        # 填写参与者姓名（飞书大厅通常有姓名输入框）
-        name_input = page.locator(
-            "input[placeholder*='名字'], input[placeholder*='name'], "
-            "input[placeholder*='Name'], input[data-testid*='name']"
-        ).first
+        # ── 填写参与者姓名 ──────────────────────────────────────────────
+        # 策略 1：get_by_placeholder（最稳定）
+        name_input = page.get_by_placeholder(_NAME_PLACEHOLDER_RE)
+        if not await name_input.is_visible(timeout=5000):
+            # 策略 2：通用文本输入框
+            name_input = page.locator(
+                "input[type='text']:not([type='password']):not([type='search'])"
+            ).first
+
         with contextlib.suppress(Exception):
-            if await name_input.is_visible(timeout=5000):
-                await name_input.click(click_count=3)
+            if await name_input.is_visible(timeout=3000):
+                await name_input.triple_click()
                 await name_input.fill(name)
-                await page.wait_for_timeout(300)
+                await page.wait_for_timeout(200)
+                logger.debug("已填写参与者姓名：%s", name)
 
-        # 点击「加入会议」/「Join」按钮
-        join_btn = page.locator(
-            "button:has-text('加入会议'), button:has-text('Join'), "
-            "button:has-text('立即加入'), button:has-text('Enter')"
-        ).first
-        await join_btn.click(timeout=10000)
+        # ── 填写会议密码（若需要）──────────────────────────────────────
+        if passcode:
+            passcode_input = page.get_by_placeholder(_PASSCODE_PLACEHOLDER_RE)
+            if not await passcode_input.is_visible(timeout=2000):
+                passcode_input = page.locator("input[type='password']").first
+            with contextlib.suppress(Exception):
+                if await passcode_input.is_visible(timeout=2000):
+                    await passcode_input.fill(passcode)
+                    await page.wait_for_timeout(200)
+                    logger.debug("已填写会议密码。")
 
-        # 等待成功进入会议（底部工具栏出现即视为成功）
+        # ── 点击「加入会议」按钮 ────────────────────────────────────────
+        # 策略 1：get_by_role（最稳定，匹配 aria-label 或文字）
+        join_btn = page.get_by_role("button", name=_JOIN_RE)
+        if not await join_btn.is_visible(timeout=3000):
+            # 策略 2：文字匹配（兜底）
+            join_btn = page.locator(
+                "button:has-text('加入会议'), button:has-text('立即加入'), "
+                "button:has-text('Join'), button:has-text('Enter')"
+            ).first
+
+        try:
+            await join_btn.click(timeout=10000)
+            logger.debug("已点击「加入会议」按钮。")
+        except Exception as e:
+            # 尝试通过 JS 点击可见的「加入」类按钮
+            clicked = await self._js_click_join_button(page)
+            if not clicked:
+                msg = f"未找到「加入会议」按钮或点击失败：{e}"
+                logger.exception(msg)
+                raise RuntimeError(msg) from e
+
+        # ── 等待成功进入会议 ────────────────────────────────────────────
         if not await self._check_joined(page):
-            msg = "加入飞书会议失败：无法确认已进入会议室。"
+            msg = "加入飞书会议超时：等待底部工具栏出现失败。"
             raise RuntimeError(msg)
 
+        logger.info("已成功加入飞书会议。")
         await self._setup_active_speaker_observer(page)
 
     async def leave(self, page: Page) -> None:
@@ -86,26 +139,29 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        # 点击「结束/离开」按钮
-        leave_btn = page.locator(
-            "button[aria-label*='离开'], button[aria-label*='Leave'], "
-            "button[aria-label*='结束'], button[aria-label*='End'], "
-            "div[data-testid*='leave'], div[data-testid*='end']"
-        ).first
+        # 策略 1：get_by_role
+        leave_btn = page.get_by_role("button", name=_LEAVE_RE)
+        if not await leave_btn.is_visible(timeout=2000):
+            # 策略 2：aria-label / text 兜底
+            leave_btn = page.locator(
+                "button[aria-label*='离开'], button[aria-label*='Leave'], "
+                "button[aria-label*='结束'], button:has-text('离开'), "
+                "button:has-text('Leave')"
+            ).first
+
         with contextlib.suppress(Exception):
             if await leave_btn.is_visible(timeout=3000):
                 await leave_btn.click(timeout=3000)
                 await page.wait_for_timeout(500)
-                # 确认离开弹窗
-                confirm = page.locator(
-                    "button:has-text('离开'), button:has-text('Leave'), "
-                    "button:has-text('确认'), button:has-text('Confirm')"
-                ).first
+
+                # 处理确认弹窗
+                confirm = page.get_by_role("button", name=_LEAVE_CONFIRM_RE)
                 if await confirm.is_visible(timeout=2000):
                     await confirm.click(timeout=2000)
                 return
 
         # 兜底：直接导航离开
+        logger.warning("未找到离开按钮，直接导航至空白页。")
         await page.goto("about:blank")
 
     async def send_chat_message(self, page: Page, message: str) -> None:
@@ -124,19 +180,18 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
 
         await self._open_chat(page)
 
+        # 飞书聊天输入框（contenteditable 或 textarea）
         chat_input = page.locator(
-            "div[contenteditable='true'][data-testid*='chat'], "
-            "textarea[placeholder*='发送消息'], textarea[placeholder*='Send'], "
-            "div[contenteditable='true'][placeholder*='发送消息'], "
-            "div[contenteditable='true'][placeholder*='Send']"
-        ).first
+            "div[contenteditable='true']:visible, textarea:visible"
+        ).last
+
         if not await chat_input.is_visible(timeout=5000):
             msg = "未找到聊天输入框或输入框不可见。"
             raise RuntimeError(msg)
 
         await chat_input.click()
-        await chat_input.fill(message)
-        await page.wait_for_timeout(300)
+        await page.keyboard.type(message)
+        await page.wait_for_timeout(200)
         await page.keyboard.press("Enter")
 
     async def get_chat_history(self, page: Page) -> MeetingChatHistory:
@@ -153,26 +208,41 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
 
         messages: list[MeetingChatMessage] = []
 
-        # 飞书聊天消息容器
-        msg_items = await page.locator(
-            "[data-testid*='chat-message'], [class*='chat-message'], "
-            "[class*='message-item']"
-        ).all()
+        # 通过 JS 从 DOM 中提取聊天记录（比 Playwright 选择器更鲁棒）
+        raw: list[dict[str, str]] = await page.evaluate(
+            """
+            () => {
+                const results = [];
+                // 尝试多种消息容器选择器
+                const containers = document.querySelectorAll(
+                    '[class*="chat-message"], [class*="message-item"], '
+                    + '[data-testid*="chat-message"], [class*="msg-item"]'
+                );
+                for (const item of containers) {
+                    const senderEl = item.querySelector(
+                        '[class*="sender"], [class*="username"], '
+                        + '[class*="name"]:not([class*="group"])'
+                    );
+                    const textEl = item.querySelector(
+                        '[class*="content"], [class*="text-body"], '
+                        + '[class*="message-text"], [class*="msg-content"]'
+                    );
+                    const sender = senderEl ? senderEl.textContent.trim() : '';
+                    const text = textEl ? textEl.textContent.trim() : '';
+                    if (text) {
+                        results.push({ sender: sender || '', text });
+                    }
+                }
+                return results;
+            }
+            """
+        )
 
-        for item in msg_items:
-            with contextlib.suppress(Exception):
-                sender_el = item.locator(
-                    "[class*='sender'], [class*='username'], [class*='name']"
-                ).first
-                text_el = item.locator(
-                    "[class*='content'], [class*='text'], [class*='body']"
-                ).first
-                sender_cnt = await sender_el.count()
-                text_cnt = await text_el.count()
-                sender = (await sender_el.inner_text()).strip() if sender_cnt else None
-                text = (await text_el.inner_text()).strip() if text_cnt else None
-                if text:
-                    messages.append(MeetingChatMessage(text=text, sender=sender))
+        for item in raw:
+            text = item.get("text", "").strip()
+            sender = item.get("sender", "").strip() or None
+            if text:
+                messages.append(MeetingChatMessage(text=text, sender=sender))
 
         return MeetingChatHistory(messages=messages)
 
@@ -186,34 +256,42 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
             list[MeetingParticipant]: 会议中的参与者列表。
         """
         # 打开参与者面板
-        members_btn = page.locator(
-            "button[aria-label*='参与者'], button[aria-label*='Members'], "
-            "button[aria-label*='Participants'], "
-            "div[data-testid*='members'], div[data-testid*='participants']"
-        ).first
+        members_btn = page.get_by_role("button", name=_MEMBERS_RE)
+        if not await members_btn.is_visible(timeout=2000):
+            members_btn = page.locator(
+                "button[aria-label*='参会成员'], button[aria-label*='成员'], "
+                "button[aria-label*='participants'], button[aria-label*='members'], "
+                "button:has-text('成员'), div[data-testid*='member']"
+            ).first
+
         with contextlib.suppress(Exception):
             if await members_btn.is_visible(timeout=3000):
                 await members_btn.click(timeout=3000)
                 await page.wait_for_timeout(1000)
 
-        participants: list[MeetingParticipant] = []
+        # 通过 JS 提取参与者列表
+        names: list[str] = await page.evaluate(
+            """
+            () => {
+                const names = [];
+                const items = document.querySelectorAll(
+                    '[class*="member-item"], [class*="participant-item"], '
+                    + '[class*="member-list"] li, [class*="attendee-item"], '
+                    + '[data-testid*="member-item"]'
+                );
+                for (const item of items) {
+                    const nameEl = item.querySelector(
+                        '[class*="name"], [class*="username"], [class*="display-name"]'
+                    );
+                    const text = nameEl ? nameEl.textContent.trim() : '';
+                    if (text) names.push(text);
+                }
+                return names;
+            }
+            """
+        )
 
-        member_items = await page.locator(
-            "[data-testid*='member-item'], [class*='member-item'], "
-            "[class*='participant-item']"
-        ).all()
-
-        for item in member_items:
-            with contextlib.suppress(Exception):
-                name_el = item.locator(
-                    "[class*='name'], [class*='username']"
-                ).first
-                name_cnt = await name_el.count()
-                name = (await name_el.inner_text()).strip() if name_cnt else None
-                if name:
-                    participants.append(MeetingParticipant(name=name, infos=[]))
-
-        return participants
+        return [MeetingParticipant(name=n, infos=[]) for n in names if n]
 
     async def mute(self, page: Page) -> None:
         """在飞书会议中将自己静音。
@@ -221,14 +299,12 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        mute_btn = page.locator(
-            "button[aria-label*='关闭麦克风'], button[aria-label*='Mute'], "
-            "button[aria-label*='静音'], div[data-testid*='mute-mic']"
-        ).first
+        # 静音 = 点击「关闭麦克风」按钮（当前为开启状态时可见）
+        mute_btn = page.get_by_role("button", name=_MIC_RE)
         if await mute_btn.is_visible(timeout=3000):
             await mute_btn.click(timeout=3000)
         else:
-            logger.warning("未找到飞书静音按钮")
+            logger.warning("未找到飞书静音按钮。")
 
     async def unmute(self, page: Page) -> None:
         """在飞书会议中取消静音。
@@ -236,14 +312,13 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        unmute_btn = page.locator(
-            "button[aria-label*='开启麦克风'], button[aria-label*='Unmute'], "
-            "button[aria-label*='取消静音'], div[data-testid*='unmute-mic']"
-        ).first
+        unmute_btn = page.get_by_role("button", name=_UNMUTE_RE)
+        if not await unmute_btn.is_visible(timeout=1000):
+            unmute_btn = page.get_by_role("button", name=_MIC_RE)
         if await unmute_btn.is_visible(timeout=3000):
             await unmute_btn.click(timeout=3000)
         else:
-            logger.warning("未找到飞书取消静音按钮")
+            logger.warning("未找到飞书取消静音按钮。")
 
     async def share_screen(self, page: Page) -> None:
         """开始在飞书会议中共享屏幕。
@@ -251,10 +326,7 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        share_btn = page.locator(
-            "button[aria-label*='共享屏幕'], button[aria-label*='Share screen'], "
-            "button[aria-label*='屏幕共享'], div[data-testid*='share-screen']"
-        ).first
+        share_btn = page.get_by_role("button", name=_SHARE_RE)
         if not await share_btn.is_visible(timeout=3000):
             msg = "未找到飞书屏幕共享按钮。"
             raise RuntimeError(msg)
@@ -267,10 +339,11 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        stop_btn = page.locator(
-            "button[aria-label*='停止共享'], button[aria-label*='Stop sharing'], "
-            "button:has-text('停止共享'), button:has-text('Stop sharing')"
-        ).first
+        stop_btn = page.get_by_role("button", name=_STOP_SHARE_RE)
+        if not await stop_btn.is_visible(timeout=3000):
+            stop_btn = page.locator(
+                "button:has-text('停止共享'), button:has-text('Stop sharing')"
+            ).first
         if not await stop_btn.is_visible(timeout=3000):
             msg = "未找到停止共享按钮。"
             raise RuntimeError(msg)
@@ -279,27 +352,27 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
 
     # ── 内部辅助方法 ──────────────────────────────────────────────────
 
-    async def _check_joined(self, page: Page, timeout: float = 20) -> bool:  # noqa: ASYNC109
-        """检查是否已成功进入飞书会议室。
-
-        底部工具栏（麦克风按钮、离开按钮等）出现则视为进入成功。
+    async def _check_joined(self, page: Page, timeout: float = 30) -> bool:  # noqa: ASYNC109
+        """检查是否已成功进入飞书会议室（等待底部工具栏出现）。
 
         参数:
             page: Playwright 的 Page 实例。
-            timeout: 等待超时时间（秒）。
+            timeout: 等待超时时间（秒），默认 30 秒。
 
         返回:
             bool: 已进入会议则为 True，否则为 False。
         """
-        # 多个可能的「已进入会议」特征元素
+        # 等待任意一个工具栏特征元素出现
         indicators = [
+            page.get_by_role("button", name=_MIC_RE),
+            page.get_by_role("button", name=_LEAVE_RE),
             page.locator(
                 "button[aria-label*='麦克风'], button[aria-label*='Microphone'], "
-                "button[aria-label*='Mute'], div[data-testid*='mic']"
+                "button[aria-label*='Mute'], div[data-testid*='mic-btn']"
             ),
             page.locator(
                 "button[aria-label*='离开'], button[aria-label*='Leave'], "
-                "div[data-testid*='leave']"
+                "div[data-testid*='leave-btn']"
             ),
         ]
 
@@ -323,21 +396,53 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
-        # 若聊天输入框已可见则无需重新打开
+        # 判断聊天输入框是否已可见
         chat_visible = await page.locator(
-            "div[contenteditable='true'][data-testid*='chat'], "
-            "textarea[placeholder*='发送消息'], textarea[placeholder*='Send']"
-        ).first.is_visible()
+            "div[contenteditable='true']:visible, "
+            "textarea[placeholder*='发送']:visible, "
+            "textarea[placeholder*='Send']:visible"
+        ).is_visible()
         if chat_visible:
             return
 
-        chat_btn = page.locator(
-            "button[aria-label*='聊天'], button[aria-label*='Chat'], "
-            "div[data-testid*='chat-btn'], div[data-testid*='chat-panel']"
-        ).first
+        # 打开聊天面板
+        chat_btn = page.get_by_role("button", name=_CHAT_RE)
+        if not await chat_btn.is_visible(timeout=2000):
+            chat_btn = page.locator(
+                "button[aria-label*='聊天'], button[aria-label*='Chat'], "
+                "div[data-testid*='chat']"
+            ).first
+
         with contextlib.suppress(Exception):
             await chat_btn.click(timeout=3000)
             await page.wait_for_timeout(800)
+
+    async def _js_click_join_button(self, page: Page) -> bool:
+        """通过 JS 遍历 DOM 点击「加入会议」类按钮（get_by_role 失败时的兜底策略）。
+
+        参数:
+            page: Playwright 的 Page 实例。
+
+        返回:
+            bool: 成功点击则为 True，否则为 False。
+        """
+        clicked: bool = await page.evaluate(
+            """
+            () => {
+                const keywords = ['加入会议', '立即加入', '进入会议',
+                                  'Join Meeting', 'Join Now', 'Enter'];
+                for (const btn of document.querySelectorAll('button')) {
+                    const text = (btn.textContent || '').trim();
+                    if (keywords.some(k => text.includes(k)) && !btn.disabled) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+            """
+        )
+        return clicked
 
     async def _setup_active_speaker_observer(self, page: Page) -> None:
         """为飞书会议注入当前发言人检测逻辑。
@@ -348,33 +453,34 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         参数:
             page: Playwright 的 Page 实例。
         """
+        own_name = get_settings().name
         with contextlib.suppress(Exception):
             await page.expose_binding(
                 "feishuReportSpeaker",
-                lambda _, name: self._state.update({"active_speaker": name or None}),
+                lambda _, n: self._state.update({"active_speaker": n or None}),
             )
             await page.evaluate(
                 """
-                () => {
+                (ownName) => {
                     const report = n => {
                         if (typeof window.feishuReportSpeaker === 'function') {
                             window.feishuReportSpeaker(n);
                         }
                     };
 
-                    // 飞书会议中高亮发言人通常有特定的 class 或 aria 属性
                     const findSpeaker = () => {
-                        // 尝试多种选择器（飞书版本迭代后选择器可能变化）
+                        // 逐步尝试多种发言人高亮选择器
                         const selectors = [
                             '[data-testid*="active-speaker"] [class*="name"]',
                             '[class*="speaking"] [class*="name"]',
+                            '[class*="active"][class*="speaker"] [class*="name"]',
+                            '[class*="highlight"] [class*="display-name"]',
                             '[class*="active"] [class*="member-name"]',
                         ];
                         for (const sel of selectors) {
                             const el = document.querySelector(sel);
-                            if (el && el.textContent.trim()) {
-                                return el.textContent.trim();
-                            }
+                            const text = el ? el.textContent.trim() : null;
+                            if (text && text !== ownName) return text;
                         }
                         return null;
                     };
@@ -395,5 +501,6 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
 
                     report(findSpeaker());
                 }
-                """
+                """,
+                own_name,
             )
