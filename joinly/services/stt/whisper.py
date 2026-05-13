@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class WhisperSTT(STT):
     """使用 Whisper 将音频转写为文字的类。"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         model_name: str | None = None,
@@ -31,6 +31,7 @@ class WhisperSTT(STT):
         min_audio: float = 0.4,
         min_silence: float = 0.2,
         hotwords: list[str] | None = None,
+        no_speech_threshold: float = 0.6,
     ) -> None:
         """初始化 WhisperSTT。
 
@@ -41,7 +42,9 @@ class WhisperSTT(STT):
             min_audio: 参与转写的最短音频时长（秒）。
             min_silence: 结束片段前所需的最短静音时长（秒）。
             hotwords: 用于提升转写准确率的热词列表。
+            no_speech_threshold: 过滤 Whisper 幻觉的 no_speech_prob 阈值（默认 0.6）。
         """
+        self.no_speech_threshold = no_speech_threshold
         self.model_name = model_name or (
             "distil-large-v3" if get_settings().device == "cuda" else "base"
         )
@@ -214,7 +217,8 @@ class WhisperSTT(STT):
                     break
 
                 text = seg.text.strip()
-                if text:
+                # 过滤幻觉：no_speech_prob 超过阈值表示该段极可能是静音/噪声
+                if text and seg.no_speech_prob < self.no_speech_threshold:
                     yield TranscriptSegment(
                         text=text,
                         start=min(start + seg.start, end or float("inf")),

@@ -29,6 +29,8 @@ class DefaultSpeechController(SpeechController):
     writer: AudioWriter
     tts: TTS
     no_speech_event: asyncio.Event
+    # 由外部（container）注入，TTS 期间设为 set 以抑制 STT 回声
+    tts_active_event: asyncio.Event | None = None
 
     def __init__(
         self,
@@ -95,6 +97,8 @@ class DefaultSpeechController(SpeechController):
         参数:
             text (str): 要朗读的文本。
         """
+        if self.tts_active_event is not None:
+            self.tts_active_event.set()
         try:
             async with self._lock, asyncio.TaskGroup() as tg:
                 chunks: list[str] = await self._chunk_text(text)
@@ -120,6 +124,9 @@ class DefaultSpeechController(SpeechController):
             msg = "Error while speaking text"
             logger.exception(msg)
             raise RuntimeError(msg) from eg
+        finally:
+            if self.tts_active_event is not None:
+                self.tts_active_event.clear()
 
     async def _chunk_text(self, text: str) -> list[str]:
         """将文本切分为较小片段以便处理。

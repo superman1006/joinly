@@ -46,6 +46,8 @@ class DefaultTranscriptionController(TranscriptionController):
         self._window_queue: asyncio.Queue[SpeechWindow | None] | None = None
         self._stt_tasks: set[asyncio.Task] = set()
         self._no_speech_event = asyncio.Event()
+        # TTS 播放期间为 set；STT 结果输出前检查，防止回声被转写
+        self.tts_active_event = asyncio.Event()
         self._clock: Clock | None = None
         self._transcript: Transcript | None = None
         self._event_bus: EventBus | None = None
@@ -206,7 +208,7 @@ class DefaultTranscriptionController(TranscriptionController):
                         )
                     dropped_windows = 0
 
-    async def _stt_utterance(self, queue: asyncio.Queue[SpeechWindow | None]) -> None:
+    async def _stt_utterance(self, queue: asyncio.Queue[SpeechWindow | None]) -> None:  # noqa: C901
         """处理语音窗口以进行转写。"""
         if self._transcript is None:
             msg = "Transcription controller not active"
@@ -241,6 +243,10 @@ class DefaultTranscriptionController(TranscriptionController):
         try:
             stt_stream = self.stt.stream(_window_iterator())
             async for s in stt_stream:
+                # TTS 播放期间丢弃 STT 结果，避免 Agent 声音回声被转写
+                if self.tts_active_event.is_set():
+                    logger.debug("Dropping STT segment during TTS playback: %s", s.text)
+                    continue
                 start = start or float("-inf")
                 end = end or float("inf")
                 segment_start = min(max(s.start, start), end)

@@ -1,0 +1,122 @@
+026-05-13 00:53:54] INFO     joinly_client.client: Joining meeting at https://vc.feishu.cn/j/905158212
+[05/13/26 00:53:54] ERROR    Error calling tool              tool_manager.py:193
+                             'join_meeting'                                     
+                             ╭─ Traceback (most recent cal─╮                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/fastmcp/tools/ │                    
+                             │ tool_manager.py:184 in      │                    
+                             │ call_tool                   │                    
+                             │                             │                    
+                             │   181 │   │   │   │   raise │                    
+                             │   182 │   │   │             │                    
+                             │   183 │   │   │   try:      │                    
+                             │ ❱ 184 │   │   │   │   retur │                    
+                             │   185 │   │   │             │                    
+                             │   186 │   │   │   # raise T │                    
+                             │   187 │   │   │   except To │                    
+                             │                             │                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/fastmcp/tools/ │                    
+                             │ tool.py:276 in run          │                    
+                             │                             │                    
+                             │   273 │   │   result = type │                    
+                             │   274 │   │                 │                    
+                             │   275 │   │   if inspect.is │                    
+                             │ ❱ 276 │   │   │   result =  │                    
+                             │   277 │   │                 │                    
+                             │   278 │   │   if isinstance │                    
+                             │   279 │   │   │   return re │                    
+                             │                             │                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/joinly/server. │                    
+                             │ py:182 in join_meeting      │                    
+                             │                             │                    
+                             │   179 ) -> str:             │                    
+                             │   180 │   """Join a meeting │                    
+                             │   181 │   ms: MeetingSessio │                    
+                             │ ❱ 182 │   await ms.join_mee │                    
+                             │   183 │   return "Joined me │                    
+                             │   184                       │                    
+                             │   185                       │                    
+                             │                             │                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/joinly/session │                    
+                             │ .py:97 in join_meeting      │                    
+                             │                             │                    
+                             │    94 │   │   │   passcode  │                    
+                             │    95 │   │   │   │   (if r │                    
+                             │    96 │   │   """           │                    
+                             │ ❱  97 │   │   await self._m │                    
+                             │    98 │   │   self._clock = │                    
+                             │    99 │   │   self._transcr │                    
+                             │   100                       │                    
+                             │                             │                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/joinly/provide │                    
+                             │ rs/browser/meeting_provider │                    
+                             │ .py:249 in join             │                    
+                             │                             │                    
+                             │   246 │   │                 │                    
+                             │   247 │   │   self._page =  │                    
+                             │   248 │   │   try:          │                    
+                             │ ❱ 249 │   │   │   self._pla │                    
+                             │   250 │   │   except Runtim │                    
+                             │   251 │   │   │   await sel │                    
+                             │   252 │   │   │   self._pag │                    
+                             │                             │                    
+                             │ /app/.venv/lib/python3.12/s │                    
+                             │ ite-packages/joinly/provide │                    
+                             │ rs/browser/meeting_provider │                    
+                             │ .py:221 in                  │                    
+                             │ _get_platform_controller    │                    
+                             │                             │                    
+                             │   218 │   │   │   │   )     │                    
+                             │   219 │   │   │   }."       │                    
+                             │   220 │   │   )             │                    
+                             │ ❱ 221 │   │   raise Runtime │                    
+                             │   222 │                     │                    
+                             │   223 │   async def join(   │                    
+                             │   224 │   │   self,         │                    
+                             ╰─────────────────────────────╯                    
+                             RuntimeError: No supported                         
+                             platform found for URL:                            
+                             https://vc.feishu.cn/j/90515821                    
+                             2. Supported platforms:                            
+                             GoogleMeet, Teams, Zoom.                           
+Traceback (most recent call last):
+  File "/app/.venv/bin/joinly", line 10, in <module>
+    sys.exit(cli())
+             ^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/click/core.py", line 1161, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/click/core.py", line 1082, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/click/core.py", line 1443, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/click/core.py", line 788, in invoke
+    return __callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/joinly/main.py", line 323, in cli
+    asyncio.run(
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/joinly_client/main.py", line 386, in run
+    await client.join_meeting(meeting_url)
+  File "/app/.venv/lib/python3.12/site-packages/joinly_client/client.py", line 309, in join_meeting
+    await self.client.call_tool(
+  File "/app/.venv/lib/python3.12/site-packages/fastmcp/client/client.py", line 866, in call_tool
+    raise ToolError(msg)
+fastmcp.exceptions.ToolError: Error calling tool 'join_meeting': No supported platform found for URL: https://vc.feishu.cn/j/905158212. Supported platforms: GoogleMeet, Teams, Zoom.
+
+What's next:
+    Debug this container error with Gordon → docker ai "help me fix this container error"

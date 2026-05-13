@@ -147,6 +147,9 @@ class SessionContainer:
             speech_controller.writer = meeting_provider.audio_writer
             speech_controller.tts = tts
             speech_controller.no_speech_event = transcription_controller.no_speech_event
+            speech_controller.tts_active_event = (
+                transcription_controller.tts_active_event
+            )
 
             meeting_session = MeetingSession(
                 meeting_provider=meeting_provider,
