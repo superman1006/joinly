@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
@@ -7,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Never
 
+import httpx
 from mcp import ClientSession
 from pydantic_ai.mcp import MCPServer
 from pydantic_ai.models import Model, infer_model
@@ -24,6 +27,81 @@ from joinly_client.prompts import (
 from joinly_client.types import McpClientConfig, ToolExecutor, Transcript
 
 logger = logging.getLogger(__name__)
+
+
+class _ThinkingPassthroughTransport(httpx.AsyncBaseTransport):
+    """透传 reasoning_content 的 HTTP 传输层。
+
+    部分兼容 OpenAI 格式的推理模型（如 mimo、Qwen 思维链版）在响应中返回
+    reasoning_content 字段，并要求后续请求将其原样回传；标准 OpenAI 客户端
+    不处理该字段，导致 HTTP 400 错误。本 transport 拦截请求/响应，自动完成
+    reasoning_content 的缓存与注入。
+    """
+
+    def __init__(self) -> None:
+        """初始化传输层。"""
+        self._inner = httpx.AsyncHTTPTransport()
+        # MD5(content) -> reasoning_content
+        self._cache: dict[str, str] = {}
+
+    @staticmethod
+    def _key(content: object) -> str:
+        return hashlib.md5(  # noqa: S324
+            json.dumps(content, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        """拦截请求，注入 reasoning_content；拦截响应，缓存 reasoning_content。"""
+        request = self._inject(request)
+        response = await self._inner.handle_async_request(request)
+        self._capture(response)
+        return response
+
+    def _inject(self, request: httpx.Request) -> httpx.Request:
+        if not self._cache:
+            return request
+        try:
+            body = json.loads(request.content)
+            modified = False
+            for msg in body.get("messages", []):
+                if msg.get("role") == "assistant":
+                    key = self._key(msg.get("content", ""))
+                    if key in self._cache:
+                        msg["reasoning_content"] = self._cache[key]
+                        modified = True
+            if not modified:
+                return request
+            new_body = json.dumps(body, ensure_ascii=False).encode()
+            # 不拷贝 content-length，让 httpx 重新计算
+            headers = {
+                k: v
+                for k, v in request.headers.items()
+                if k.lower() != "content-length"
+            }
+            return httpx.Request(
+                method=request.method,
+                url=request.url,
+                headers=headers,
+                content=new_body,
+            )
+        except Exception:  # noqa: BLE001
+            return request
+
+    def _capture(self, response: httpx.Response) -> None:
+        try:
+            body = json.loads(response.content)
+            for choice in body.get("choices", []):
+                msg = choice.get("message", {})
+                reasoning = msg.get("reasoning_content")
+                content = msg.get("content", "")
+                if reasoning and content is not None:
+                    self._cache[self._key(content)] = reasoning
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    async def aclose(self) -> None:
+        """关闭内部传输层。"""
+        await self._inner.aclose()
 
 
 def get_llm(llm_provider: str, model_name: str) -> Model:
@@ -63,9 +141,14 @@ def get_llm(llm_provider: str, model_name: str) -> Model:
                 "必须在环境变量中设置 OPENAI_BASE_URL。"
             )
             raise ValueError(msg)
+        http_client = httpx.AsyncClient(transport=_ThinkingPassthroughTransport())
         return OpenAIModel(
             model_name,
-            provider=OpenAIProvider(base_url=base_url, api_key=api_key),
+            provider=OpenAIProvider(
+                base_url=base_url,
+                api_key=api_key,
+                http_client=http_client,
+            ),
         )
 
     if llm_provider == "azure_openai":
