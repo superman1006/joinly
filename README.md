@@ -1,16 +1,5 @@
 <p align="center">
-  <a href="https://github.com/joinly-ai/assets">
-    <picture>
-      <source
-        media="(prefers-color-scheme: dark)"
-        srcset="https://raw.githubusercontent.com/joinly-ai/assets/main/animations/logo-animations/joinly_logo_black_cropped.gif"
-      >
-      <img
-        alt="Animated joinly.ai logo"
-        src="https://raw.githubusercontent.com/joinly-ai/assets/main/animations/logo-animations/joinly_logo_light_cropped.gif"
-      >
-    </picture>
-  </a>
+  <img alt="Transsion" src="./transsionLOGO.png" width="420">
 </p>
 
 [![GitHub Release](https://img.shields.io/github/v/release/joinly-ai/joinly?sytle=flat&label=Release&labelColor=black&color=%237B2CBF)](https://github.com/joinly-ai/joinly/releases)
@@ -38,16 +27,6 @@
 - **Bring-your-own-LLM**: Works with all LLM providers (also locally with Ollama)
 - **Choose-your-preferred-TTS/STT**: Modular design supports multiple services - Whisper/Deepgram for STT and Kokoro/ElevenLabs/Deepgram for TTS (and more to come...)
 - **100% open-source, self-hosted and privacy-first** :rocket:
-
-# :video_camera: Demos
-### GitHub
-[![GitHub Demo](https://raw.githubusercontent.com/joinly-ai/assets/main/images/others/github-demo.png)](https://youtu.be/XWolVuxw8I8)
-> In this demo video, joinly answers the question 'What is Joinly?' by accessing the latest news from the web. It then creates an issue in a GitHub demo repository.
-### Notion
-[![Notion Demo](https://raw.githubusercontent.com/joinly-ai/assets/main/images/others/notion-demo.png)](https://www.youtube.com/watch?v=pvYqZi2KeI0)
-> In this demo video, we connect joinly to our notion via MCP and let it edit the content of a page content live in the meeting. 
-
-Any ideas what we should build next? [Write us!](https://discord.com/invite/AN5NEBkS4d) :rocket:
 
 # :zap: Quickstart
 Run joinly via Docker with a basic conversational agent client.

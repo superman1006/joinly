@@ -9,12 +9,14 @@
 修补 ``enumerateDevices`` 以包含虚拟摄像头，使依赖摄像头枚举的平台
 仍能显示视频开关。
 
-画布直接渲染 Joinly 标识（不经 CDP 投屏、不经 JPEG 压缩）。
+画布直接渲染会议标识图像（transsionLOGO.png，不经 CDP 投屏、不经 JPEG 压缩）。
 音频幅度驱动实时均衡器式动效。
 """
 
 import asyncio
+import base64
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 from playwright.async_api import Page
@@ -26,52 +28,23 @@ _CAM_HEIGHT = 720
 _BAND_THROTTLE_S = 0.05
 _NUM_BANDS = 7
 
-# Logo SVG 的 data URI，在画布上作为 Image 加载
-_LOGO_SVG = (
-    "data:image/svg+xml,"
-    "%3Csvg viewBox='0 0 509 508' xmlns='http://www.w3.org/2000/svg'"
-    " style='fill-rule:evenodd;clip-rule:evenodd;"
-    "stroke-linejoin:round;stroke-miterlimit:2'%3E"
-    "%3Cg transform='matrix(0.198828,0,0,1,0,0)'%3E"
-    "%3Crect x='0' y='0' width='2560' height='507.274'"
-    " style='fill:none'/%3E"
-    "%3Cg%3E%3Cg transform="
-    "'matrix(18.9194,0,0,3.74809,-1607.95,-6354.86)'%3E"
-    "%3Cg transform='matrix(6.03591e-17,-0.985739,0.986051,"
-    "6.03782e-17,-102.185,1960.59)'%3E"
-    "%3Cpath d='M268.936,224.012C268.936,205.142 253.555,189.822 "
-    "234.611,189.822L165.961,189.822C147.016,189.822 131.636,"
-    "205.142 131.636,224.012L131.636,292.846C131.636,311.716 "
-    "147.016,327.036 165.961,327.036L234.611,327.036C253.555,"
-    "327.036 268.936,311.716 268.936,292.846L268.936,224.012Z'/%3E"
-    "%3C/g%3E%3Cg%3E%3Cg transform='matrix(-1.66394e-16,0.905807,"
-    "-0.905807,-1.66394e-16,618.204,708.95)'%3E"
-    "%3Cpath d='M1147.84,552.057C1159.51,552.057 1168.44,547.024 "
-    "1173.91,539.258L1173.91,544.701C1173.91,546.155 1174.49,"
-    "547.55 1175.52,548.579C1176.55,549.607 1177.94,550.185 "
-    "1179.4,550.185C1183.66,550.185 1188.87,550.185 1188.87,"
-    "550.185L1188.87,477.771L1179.46,477.771C1177.99,477.771 "
-    "1176.58,478.355 1175.54,479.395C1174.5,480.436 1173.91,"
-    "481.847 1173.91,483.318L1173.91,488.698C1168.44,480.932 "
-    "1159.51,475.899 1147.84,475.899C1127.38,475.899 1111.85,"
-    "492.154 1111.85,513.906C1111.85,535.802 1127.38,552.057 "
-    "1147.84,552.057ZM1150.29,538.539C1136.46,538.539 1126.66,"
-    "528.167 1126.66,513.906C1126.66,499.645 1136.46,489.417 "
-    "1150.29,489.417C1163.54,489.417 1174.2,499.789 1174.2,"
-    "513.906C1174.2,528.167 1163.54,538.539 1150.29,538.539Z'"
-    " style='fill:white;fill-rule:nonzero'/%3E%3C/g%3E"
-    "%3Cg transform='matrix(1.6197e-16,0.905807,0.712479,"
-    "-1.35305e-16,-204.864,701.281)'%3E"
-    "%3Crect x='1209.34' y='477.771' width='14.958' height='72.414'"
-    " style='fill:white;fill-rule:nonzero'/%3E%3C/g%3E"
-    "%3Cg transform='matrix(-0.901226,0,0,0.901226,"
-    "439.829,1382.51)'%3E"
-    "%3Ccircle cx='349.421' cy='467.11' r='7.517'"
-    " style='fill:white'/%3E%3C/g%3E%3C/g%3E%3C/g%3E"
-    "%3C/g%3E%3C/g%3E%3C/svg%3E"
-)
 
-# ---------------------------------------------------------------------------
+def _transsion_logo_data_uri() -> str:
+    """从仓库根目录的 transsionLOGO.png 生成可在画布 Image 中使用的 data URI。"""
+    repo_root = Path(__file__).resolve().parents[3]
+    logo_path = repo_root / "transsionLOGO.png"
+    if not logo_path.is_file():
+        msg = (
+            f"未找到虚拟摄像头用标识图：{logo_path}。"
+            "请将 transsionLOGO.png 放在项目根目录。"
+        )
+        raise FileNotFoundError(msg)
+    raw = logo_path.read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+_LOGO_DATA_URI = _transsion_logo_data_uri()
 # 状态动效函数：各函数在标识下方绘制一小段动画。
 # 为可读性拆成独立 JS 函数体，经 _CAMERA_OVERRIDE_TEMPLATE 插入主渲染循环。
 # ---------------------------------------------------------------------------
@@ -289,7 +262,7 @@ function fxReading(ctx, cx, y, t, alpha) {
 _CAMERA_OVERRIDE_TEMPLATE = """\
 (() => {{
     const W = {w}, H = {h};
-    const LOGO_SRC = "{logo_svg}";
+    const LOGO_SRC = "{logo_src}";
 
     if (window.__camOrigGUM) return;
 
@@ -477,9 +450,8 @@ _CAMERA_OVERRIDE_TEMPLATE = """\
 class CameraFeed:
     """管理虚拟摄像头画布与由幅度驱动的光晕效果。
 
-    Draws the Joinly logo directly on the camera canvas (no CDP
-    screencast).  Wraps an ``AudioWriter`` to extract amplitude and
-    push it to the canvas render loop.
+    在画布上绘制标识图像（transsionLOGO.png）。``AudioWriter`` 包装用于提取幅度并
+    推送到画布渲染循环。
     """
 
     def __init__(self, writer: AudioWriter) -> None:
@@ -495,7 +467,7 @@ class CameraFeed:
             w=_CAM_WIDTH,
             h=_CAM_HEIGHT,
             n_bands=_NUM_BANDS,
-            logo_svg=_LOGO_SVG,
+            logo_src=_LOGO_DATA_URI,
             fx_speaking=_FX_SPEAKING,
             fx_typing=_FX_TYPING,
             fx_share=_FX_SHARE,
