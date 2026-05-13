@@ -84,6 +84,67 @@ docker run --env-file .env ghcr.io/joinly-ai/joinly:latest --client <MeetingURL>
 ```
 > :red_circle: Having trouble getting started? Let's figure it out together on our [discord](https://discord.com/invite/AN5NEBkS4d)! 
 
+# :bird: Feishu (飞书) Support
+
+This fork adds support for **Feishu / Lark** video meetings (`vc.feishu.cn`).
+
+> [!IMPORTANT]
+> Feishu requires a pre-authenticated browser session to join meetings via the web. You need to export your Feishu login cookies once and provide them to the container.
+
+## Prerequisites
+
+- Build the Docker image from this repository (the official `joinly-ai/joinly` image does not include Feishu support):
+
+```bash
+docker build --platform linux/amd64 -t joinly-feishu .
+```
+
+> **Note**: The `--platform linux/amd64` flag is required to install Google Chrome, which is needed to pass Feishu's browser detection. On Apple Silicon Macs, Docker will run the image via Rosetta emulation.
+
+## Step 1 — Export your Feishu cookies
+
+1. Open **Google Chrome** and go to `https://vc.feishu.cn`
+2. Log in with your Feishu account (phone number + SMS verification)
+3. Install the [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) Chrome extension
+4. Click the Cookie-Editor icon while on `vc.feishu.cn`
+5. Click **Export** → **Export as JSON**
+6. Save the copied content as `feishu_cookies.json` in the **root directory of this project**
+
+```
+joinly/
+├── feishu_cookies.json   ← put it here
+├── .env
+├── Dockerfile
+└── ...
+```
+
+> [!WARNING]
+> `feishu_cookies.json` contains your Feishu session tokens. **Never commit this file to a public repository.** It is already listed in `.gitignore`.
+
+## Step 2 — Run with Feishu cookies
+
+Pass the cookie file into the container via a volume mount and environment variable:
+
+```bash
+docker run --env-file .env \
+  -e JOINLY_FEISHU_COOKIES_FILE=/cookies/feishu_cookies.json \
+  -v $(pwd)/feishu_cookies.json:/cookies/feishu_cookies.json:ro \
+  joinly-feishu \
+  --client "https://vc.feishu.cn/j/<MeetingID>"
+```
+
+The bot will automatically:
+1. Navigate to the meeting URL
+2. Click **Join on this browser**
+3. Fill in its display name (set via `JOINLY_NAME` in `.env`)
+4. Click **Join** to enter the meeting
+
+## Cookie expiry
+
+Feishu login sessions expire after a period of inactivity. If the bot fails to join (e.g., gets stuck on the login page), re-export your cookies using the steps above and replace `feishu_cookies.json`.
+
+---
+
 # :technologist: Run an external client
 In Quickstart, we ran the Docker Container directly as a client using `--client`. But we can also run it as a server and connect to it from outside the container, which allows us to connect other MCP servers. Here, we run an external client using the [joinly-client package](https://pypi.org/project/joinly-client/) and connect it to the joinly MCP server.
 
