@@ -12,3 +12,4 @@ __pycache__/
 
 # Claude Code session memory (local only)
 .claude/
+feishu_cookies.json

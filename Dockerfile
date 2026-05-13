@@ -4,15 +4,22 @@ FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
-# 换用清华大学 Ubuntu Ports 镜像（ARM64 加速）
-RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' \
-    /etc/apt/sources.list
+# 换用阿里云 Ubuntu 镜像（AMD64）
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list \
+ && sed -i 's|http://security.ubuntu.com/ubuntu|https://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list
 
-# 安装 PulseAudio、Xvfb、VNC 服务
+# 安装 PulseAudio、Xvfb、VNC 服务 + Google Chrome（通过飞书浏览器检测）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pulseaudio \
     xvfb \
     x11vnc \
+    curl \
+    gnupg \
+    && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+       | gpg --dearmor -o /etc/apt/trusted.gpg.d/google-chrome.gpg \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" \
+       > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 uv，强制使用系统 Python 3.12（避免 uv 自动下载 3.14）

@@ -42,10 +42,19 @@ class BrowserSession:
         """启动并连接 Playwright 浏览器。"""
         self._playwright = await async_playwright().start()
 
-        bin_path = Path(self._playwright.chromium.executable_path)
-        logger.debug("Chromium binary path: %s", bin_path)
+        # 优先使用系统安装的 Google Chrome（可通过飞书浏览器检测）
+        _chrome_candidates = [
+            Path("/usr/bin/google-chrome-stable"),
+            Path("/usr/bin/google-chrome"),
+            Path("/opt/google/chrome/chrome"),
+        ]
+        bin_path = next(
+            (p for p in _chrome_candidates if p.exists()),
+            Path(self._playwright.chromium.executable_path),
+        )
+        logger.debug("Browser binary path: %s", bin_path)
         if not bin_path.exists():
-            msg = "Chromium binary not found"
+            msg = "Browser binary not found"
             logger.error(msg)
             raise RuntimeError(msg)
 
@@ -66,16 +75,19 @@ class BrowserSession:
             "--enable-usermedia-screen-capturing",
             "--enable-features=WebRTCPipeWireCapturer",
             "--ozone-platform=x11",
-            "--disable-gpu",
+            "--use-gl=swiftshader",  # 软件渲染 WebGL，无需真实 GPU
+            "--disable-gpu-sandbox",
             "--disable-focus-on-load",
             "--window-size=1280,720",
-            "--lang=en-US",
+            "--lang=zh-CN",
             "--test-type",
             "--no-sandbox",  # Docker 内必需
             "--disable-dev-shm-usage",
-            "--disable-gpu-sandbox",
             "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36",
             "--no-xshm",
             "--force-device-scale-factor=1",
             "--disable-features=TranslateUI,MediaRouter,WebRtcAutomaticGainControl",
@@ -105,6 +117,48 @@ class BrowserSession:
             cdp_endpoint
         )
         self._pw_context = self._pw_browser.contexts[0]
+        # Chrome UA — 与系统安装的 Google Chrome 保持一致
+        _ua = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36"
+        )
+        await self._pw_context.set_extra_http_headers(
+            {
+                "User-Agent": _ua,
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Sec-CH-UA": (
+                    '"Google Chrome";v="136", "Chromium";v="136", "Not-A.Brand";v="99"'
+                ),
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Linux"',
+            }
+        )
+        await self._pw_context.add_init_script(f"""
+            Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+            Object.defineProperty(navigator, 'vendor', {{get: () => 'Google Inc.'}});
+            Object.defineProperty(navigator, 'userAgent', {{get: () => '{_ua}'}});
+            window.chrome = {{runtime: {{}}, loadTimes: ()=>{{}}, csi: ()=>{{}}}};
+            const _brands = [
+                {{brand: 'Google Chrome', version: '136'}},
+                {{brand: 'Chromium', version: '136'}},
+                {{brand: 'Not-A.Brand', version: '99'}},
+            ];
+            Object.defineProperty(navigator, 'userAgentData', {{
+                get: () => ({{
+                    brands: _brands,
+                    mobile: false,
+                    platform: 'Linux',
+                    getHighEntropyValues: async () => ({{
+                        brands: _brands,
+                        mobile: false,
+                        platform: 'Linux',
+                        architecture: 'x86',
+                        bitness: '64',
+                    }}),
+                }}),
+            }});
+        """)
         self._default_page = (
             self._pw_context.pages[0] if self._pw_context.pages else None
         )

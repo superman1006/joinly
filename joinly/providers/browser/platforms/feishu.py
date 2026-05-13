@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import re
 from typing import Any, ClassVar
 
@@ -70,26 +72,48 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         """加入飞书视频会议。飞书 Web 端无需填写姓名，直接通过浏览器入会。"""
         await self._join_feishu(page, url)
 
-        # 等待会议室 UI 加载完成
-        await page.wait_for_timeout(5000)
+        if not await self._check_joined(page):
+            logger.warning("Join check did not detect expected UI; proceeding anyway")
 
         await self._setup_active_speaker_observer(page)
 
     async def _join_feishu(self, page: Page, url: str) -> None:
-        """执行飞书加入会议流程。
+        """执行飞书加入会议的两段式流程。
 
-        策略：先用 JS 检查按钮的真实类型/href，能直接拿到 URL 就 page.goto()，
-        拿不到再尝试点击，并把所有相关信息 dump 到 /tmp 以便诊断。
+        飞书会议链接通常先打开一个"选择入会方式"的中转页，再跳到真正的会议页面，
+        因此需要两次导航：
+        1) 点击"在浏览器中加入"
+        2) 等真正的 Join 按钮 enabled 后再点击
         """
+        # 注入 JS 伪装成真实 Chrome，避免被飞书/Lark 检测为自动化浏览器
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-CN', 'zh', 'en-US', 'en']
+            });
+        """)
+
+        # 注入已登录的飞书 Cookie（跳过手机验证）
+        cookies_file = os.environ.get("JOINLY_FEISHU_COOKIES_FILE")
+        if cookies_file and os.path.exists(cookies_file):  # noqa: PTH110
+            try:
+                with open(cookies_file) as f:  # noqa: PTH123, ASYNC230
+                    cookies: list[dict] = json.load(f)
+                await page.context.add_cookies(cookies)
+                logger.info("Injected %d Feishu cookies", len(cookies))
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to inject Feishu cookies", exc_info=True)
+
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         with contextlib.suppress(PlaywrightTimeoutError):
             await page.wait_for_load_state("networkidle", timeout=8000)
 
         await page.screenshot(path="/tmp/feishu_step1.png")  # noqa: S108
         logger.info("Step1 URL: %s", page.url)
-        await self._dump_clickables(page, "/tmp/feishu_step1_clickables.txt")  # noqa: S108
 
-        # ── 第一步：找「在浏览器中加入」并尝试跳转 ──
+        # ── 第一步：点击「在浏览器中加入」跳转到会议页 ──
         info = await self._find_element_info(
             page,
             r"join on this browser|join.*browser|网页版入会|通过浏览器|在浏览器中加入",
@@ -98,25 +122,60 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         await self._navigate_via_element(page, info)
 
         await page.screenshot(path="/tmp/feishu_step2.png")  # noqa: S108
-        await self._dump_html(page, "/tmp/feishu_step2.html")  # noqa: S108
         logger.info("Step2 URL: %s", page.url)
-        await self._dump_clickables(page, "/tmp/feishu_step2_clickables.txt")  # noqa: S108
 
-        # ── 第二步：等 Join 按钮变为 enabled 后再点击 ──
-        info = await self._wait_for_enabled_button(page, _JOIN_PATTERN, max_wait=30)
-        if info is None:
-            logger.warning("Join button never became enabled within timeout")
-            info = await self._find_element_info(page, _JOIN_PATTERN)
-        logger.info("Step2 button info (after wait): %s", info)
-        await page.screenshot(path="/tmp/feishu_step2_ready.png")  # noqa: S108
-        await self._navigate_via_element(page, info)
-
+        # ── 第二步：填写姓名（有名字输入框时），再等 Join 按钮 enabled ──
+        name_input = page.get_by_placeholder(
+            re.compile(r"name|姓名|your name", re.IGNORECASE)
+        )
         with contextlib.suppress(PlaywrightTimeoutError):
-            await page.wait_for_load_state("networkidle", timeout=8000)
+            await name_input.wait_for(state="visible", timeout=3000)
+            await name_input.fill(get_settings().name)
+            logger.info("Filled name: %s", get_settings().name)
 
-        logger.info("Final URL: %s", page.url)
+        # 等待 Join 按钮 enabled，然后直接点击（form submit，不走 navigate_via_element）
+        join_btn = page.get_by_role("button", name=re.compile(r"^join$", re.IGNORECASE))
+        for _ in range(30):
+            if await join_btn.is_enabled():
+                break
+            await asyncio.sleep(1)
+        else:
+            logger.warning("Join button did not become enabled within 30s")
+
+        # 记录按钮 HTML，便于调试
+        btn_html = await page.evaluate(
+            """() => {
+                const btns = [...document.querySelectorAll('button')];
+                const b = btns.find(b => /^join$/i.test(b.textContent.trim()));
+                return b ? b.outerHTML.substring(0, 300) : 'not found';
+            }"""
+        )
+        logger.info("Join button HTML: %s", btn_html)
+
+        logger.info("Clicking Join button")
+        # force=True 跳过可见性/稳定性检查，确保点击生效
+        await join_btn.click(force=True)
+        await asyncio.sleep(2)
+        # 如果表单还在，再用 JS 直接触发点击
+        form_visible = await page.locator("text=Join Meeting").is_visible()
+        if form_visible:
+            logger.info("Form still visible, retrying with JS click")
+            await page.evaluate(
+                """() => {
+                    const btns = [...document.querySelectorAll('button')];
+                    const b = btns.find(b => /^join$/i.test(b.textContent.trim()));
+                    if (b) b.click();
+                }"""
+            )
+
+        # 等待入会表单消失
+        with contextlib.suppress(PlaywrightTimeoutError):
+            await page.locator("text=Join Meeting").wait_for(
+                state="hidden", timeout=30000
+            )
+
         await page.screenshot(path="/tmp/feishu_step3.png")  # noqa: S108
-        await self._dump_html(page, "/tmp/feishu_step3.html")  # noqa: S108
+        logger.info("Final URL: %s", page.url)
 
     async def leave(self, page: Page) -> None:
         """离开飞书视频会议。"""
@@ -396,32 +455,6 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         if not await chat_input.is_visible():
             await page.wait_for_timeout(2000)
 
-    @staticmethod
-    async def _dump_clickables(page: Page, path: str) -> None:
-        """把页面所有可点击元素的文本/href 写到文件，便于诊断。"""
-        with contextlib.suppress(Exception):
-            data = await page.evaluate(
-                """() => {
-                    const els = [
-                        ...document.querySelectorAll('a, button, [role="button"]')
-                    ];
-                    return els.map(e => ({
-                        tag: e.tagName,
-                        text: (e.textContent || '').trim().substring(0, 80),
-                        href: e.tagName === 'A' ? e.href : null,
-                        role: e.getAttribute('role'),
-                    }));
-                }"""
-            )
-            await asyncio.to_thread(_write_lines, path, [str(d) for d in data])
-
-    @staticmethod
-    async def _dump_html(page: Page, path: str) -> None:
-        """把当前页面 HTML 写到文件，便于诊断。"""
-        with contextlib.suppress(Exception):
-            html = await page.content()
-            await asyncio.to_thread(_write_text, path, html[:200000])
-
     async def _setup_active_speaker_observer(self, page: Page) -> None:
         """设置当前说话人观察器。"""
         own_name = get_settings().name
@@ -465,13 +498,3 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
             """,
             own_name,
         )
-
-
-def _write_lines(path: str, lines: list[str]) -> None:
-    with open(path, "w", encoding="utf-8") as f:  # noqa: PTH123
-        f.writelines(line + "\n" for line in lines)
-
-
-def _write_text(path: str, text: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:  # noqa: PTH123
-        f.write(text)

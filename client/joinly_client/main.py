@@ -152,8 +152,7 @@ def _parse_kv(
 @click.option(
     "--tts",
     type=str,
-    help='要使用的文本转语音服务，可选："kokoro"（本地）、'
-    '"elevenlabs"、"deepgram"。',
+    help='要使用的文本转语音服务，可选："kokoro"（本地）、"elevenlabs"、"deepgram"。',
     default=None,
     show_envvar=True,
     envvar="JOINLY_TTS",
@@ -205,9 +204,7 @@ def _parse_kv(
     help="提高日志详细程度（可重复使用）。",
     default=1,
 )
-@click.option(
-    "-q", "--quiet", is_flag=True, help="仅保留错误与严重级别的日志输出。"
-)
+@click.option("-q", "--quiet", is_flag=True, help="仅保留错误与严重级别的日志输出。")
 @click.argument(
     "meeting-url",
     type=str,
@@ -351,7 +348,10 @@ async def run(  # noqa: PLR0913
             await stack.enter_async_context(additional_client)
             logger.debug("Connected to %s", client_name)
 
-        joinly_config = McpClientConfig(client=client.client, exclude=["join_meeting"])
+        joinly_config = McpClientConfig(
+            client=client.client,
+            exclude=["join_meeting", "get_video_snapshot"],
+        )
         tools, tool_executor = await load_tools(
             joinly_config
             if not additional_clients
