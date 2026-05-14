@@ -54,6 +54,31 @@ docker run -p 8000:8000 --env-file .env ghcr.io/joinly-ai/joinly:latest
 ```
 See `.env.example` for all environment variables (`JOINLY_` prefix, e.g. `JOINLY_LLM_MODEL`, `JOINLY_LLM_PROVIDER`).
 
+### Docker（飞书专用镜像）
+
+> **Python 版本约束**：Dockerfile 通过 `ENV UV_PYTHON=3.12` 固定使用 **Python 3.12**。
+> 不可升级到 3.13+，因为 `onnxruntime==1.21.1` 目前只提供 cp312/cp313 的 wheel，3.14+ 会导致构建失败。
+> 若将来升级 onnxruntime，请先确认新版本对目标 Python 版本有对应 wheel 再修改此约束。
+
+```bash
+# 首次构建（需 30-60 分钟，需开 VPN）
+docker build --platform linux/amd64 -t joinly-feishu .
+
+# 只改代码后快速重建（复用缓存，不重新下载任何内容）
+docker build --platform linux/amd64 --cache-from joinly-feishu:latest -t joinly-feishu:latest .
+
+# 运行飞书会议
+docker run -d --name joinly-feishu \
+  --env-file .env \
+  -e JOINLY_FEISHU_COOKIES_FILE=/cookies/feishu_cookies.json \
+  -v $(pwd)/feishu_cookies.json:/cookies/feishu_cookies.json:ro \
+  joinly-feishu:latest \
+  --client "https://vc.feishu.cn/j/<会议ID>"
+
+# 查看日志
+docker logs -f joinly-feishu
+```
+
 ## Workspace Structure
 
 This is a **uv workspace** with three packages:

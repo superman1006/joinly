@@ -11,7 +11,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from joinly.providers.browser.platforms.base import BaseBrowserPlatformController
 from joinly.settings import get_settings
-from joinly.types import MeetingChatHistory, MeetingParticipant
+from joinly.types import MeetingChatHistory, MeetingChatMessage, MeetingParticipant
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +21,6 @@ _JOIN_BTN_RE = re.compile(
 )
 _LEAVE_BTN_RE = re.compile(
     r"leave|离开|结束|离开会议|结束会议|挂断",
-    re.IGNORECASE,
-)
-_MUTE_BTN_RE = re.compile(
-    r"^(mute|静音|关闭麦克风|麦克风关闭)",
-    re.IGNORECASE,
-)
-_UNMUTE_BTN_RE = re.compile(
-    r"^(unmute|取消静音|开启麦克风|解除静音|麦克风开启)",
     re.IGNORECASE,
 )
 _CHAT_BTN_RE = re.compile(r"^(chat|聊天)", re.IGNORECASE)
@@ -99,8 +91,7 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         cookies_file = os.environ.get("JOINLY_FEISHU_COOKIES_FILE")
         if cookies_file and os.path.exists(cookies_file):  # noqa: PTH110
             try:
-                with open(cookies_file) as f:  # noqa: PTH123, ASYNC230
-                    cookies: list[dict] = json.load(f)
+                cookies = self._load_cookies(cookies_file)
                 await page.context.add_cookies(cookies)
                 logger.info("Injected %d Feishu cookies", len(cookies))
             except Exception:  # noqa: BLE001
@@ -128,15 +119,22 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         name_input = page.get_by_placeholder(
             re.compile(r"name|姓名|your name", re.IGNORECASE)
         )
-        with contextlib.suppress(PlaywrightTimeoutError):
-            await name_input.wait_for(state="visible", timeout=3000)
+        name_filled = False
+        try:
+            await name_input.wait_for(state="visible", timeout=10000)
             await name_input.fill(get_settings().name)
+            name_filled = True
             logger.info("Filled name: %s", get_settings().name)
+        except PlaywrightTimeoutError:
+            logger.warning("Name input not found within 10s, proceeding")
 
         # 等待 Join 按钮 enabled，然后直接点击（form submit，不走 navigate_via_element）
         join_btn = page.get_by_role("button", name=re.compile(r"^join$", re.IGNORECASE))
         for _ in range(30):
             if await join_btn.is_enabled():
+                break
+            if not name_filled:
+                # 名字没填，按钮永远不会 enabled，不用等
                 break
             await asyncio.sleep(1)
         else:
@@ -205,29 +203,47 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         await page.wait_for_timeout(500)
         await page.keyboard.press("Enter")
 
-    async def get_chat_history(self, page: Page) -> MeetingChatHistory:
+    async def get_chat_history(self, page: Page) -> MeetingChatHistory:  # noqa: ARG002
         """获取飞书视频会议的聊天历史（暂不支持）。"""
-        return await super().get_chat_history(page)
+        return MeetingChatHistory(
+            messages=[MeetingChatMessage(text="没有查到", sender="system")]
+        )
 
-    async def get_participants(self, page: Page) -> list[MeetingParticipant]:
+    async def get_participants(self, page: Page) -> list[MeetingParticipant]:  # noqa: ARG002
         """获取飞书视频会议的参与者列表（暂不支持）。"""
-        return await super().get_participants(page)
+        return [MeetingParticipant(name="没有查到")]
 
     async def mute(self, page: Page) -> None:
         """在飞书视频会议中将自己静音。"""
-        mute_btn = page.get_by_role("button", name=_MUTE_BTN_RE)
-        if await mute_btn.is_visible():
-            await mute_btn.click(timeout=1000)
-        elif not await page.get_by_role("button", name=_UNMUTE_BTN_RE).is_visible():
+        # 工具栏麦克风按钮：未静音时图标为 MicFilled，点击后静音
+        mic_on_btn = page.locator('button:has(svg[data-icon="MicFilled"])').filter(
+            has_text="麦克风"
+        )
+        if await mic_on_btn.count() > 0:
+            await mic_on_btn.first.click(timeout=1000)
+        elif (
+            await page.locator('button:has(svg[data-icon="MicOffFilled"])')
+            .filter(has_text="麦克风")
+            .count()
+            == 0
+        ):
             msg = "Mute button not found or not visible."
             raise RuntimeError(msg)
 
     async def unmute(self, page: Page) -> None:
         """在飞书视频会议中取消自己静音。"""
-        unmute_btn = page.get_by_role("button", name=_UNMUTE_BTN_RE)
-        if await unmute_btn.is_visible():
-            await unmute_btn.click(timeout=1000)
-        elif not await page.get_by_role("button", name=_MUTE_BTN_RE).is_visible():
+        # 工具栏麦克风按钮：静音时图标为 MicOffFilled，点击后取消静音
+        mic_off_btn = page.locator('button:has(svg[data-icon="MicOffFilled"])').filter(
+            has_text="麦克风"
+        )
+        if await mic_off_btn.count() > 0:
+            await mic_off_btn.first.click(timeout=1000)
+        elif (
+            await page.locator('button:has(svg[data-icon="MicFilled"])')
+            .filter(has_text="麦克风")
+            .count()
+            == 0
+        ):
             msg = "Unmute button not found or not visible."
             raise RuntimeError(msg)
 
@@ -265,6 +281,23 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         await page.wait_for_timeout(500)
 
     # ── 内部辅助方法 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _load_cookies(cookies_file: str) -> list[dict]:
+        """从文件加载 Cookie，并规范化 sameSite 字段以兼容 Playwright。"""
+        _same_site_map = {
+            "no_restriction": "None",
+            "lax": "Lax",
+            "strict": "Strict",
+            "none": "None",
+            "unspecified": "Lax",
+        }
+        with open(cookies_file) as f:  # noqa: PTH123
+            cookies: list[dict] = json.load(f)
+        for c in cookies:
+            raw = str(c.get("sameSite", "")).lower()
+            c["sameSite"] = _same_site_map.get(raw, "Lax")
+        return cookies
 
     @staticmethod
     async def _wait_for_enabled_button(
