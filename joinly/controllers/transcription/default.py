@@ -259,9 +259,9 @@ class DefaultTranscriptionController(TranscriptionController):
                 )
                 self._transcript.add_segment(segment)
                 self._notify("segment")
-                logger.debug(
-                    "%s: %s (%.2fs-%.2fs)",
-                    segment.speaker if segment.speaker else "Participant",
+                logger.info(
+                    "[%s] %s (%.2fs-%.2fs)",
+                    segment.speaker if segment.speaker else "未知用户",
                     segment.text,
                     segment.start,
                     segment.end,

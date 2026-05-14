@@ -115,6 +115,17 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
         await page.screenshot(path="/tmp/feishu_step2.png")  # noqa: S108
         logger.info("Step2 URL: %s", page.url)
 
+        # ── 调试：打印页面上所有 input 的 placeholder，帮助定位名字输入框 ──
+        inputs_info = await page.evaluate("""() => {
+            return [...document.querySelectorAll('input, textarea')].map(el => ({
+                tag: el.tagName,
+                placeholder: el.placeholder,
+                type: el.type,
+                visible: el.offsetParent !== null,
+            }));
+        }""")
+        logger.info("Page inputs: %s", inputs_info)
+
         # ── 第二步：填写姓名（有名字输入框时），再等 Join 按钮 enabled ──
         name_input = page.get_by_placeholder(
             re.compile(r"name|姓名|your name", re.IGNORECASE)
@@ -129,12 +140,10 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
             logger.warning("Name input not found within 10s, proceeding")
 
         # 等待 Join 按钮 enabled，然后直接点击（form submit，不走 navigate_via_element）
+        # 注意：已登录用户无需填名字，按钮会在页面加载完成后自动变可用，需等待
         join_btn = page.get_by_role("button", name=re.compile(r"^join$", re.IGNORECASE))
         for _ in range(30):
             if await join_btn.is_enabled():
-                break
-            if not name_filled:
-                # 名字没填，按钮永远不会 enabled，不用等
                 break
             await asyncio.sleep(1)
         else:
@@ -209,9 +218,33 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
             messages=[MeetingChatMessage(text="没有查到", sender="system")]
         )
 
-    async def get_participants(self, page: Page) -> list[MeetingParticipant]:  # noqa: ARG002
-        """获取飞书视频会议的参与者列表（暂不支持）。"""
-        return [MeetingParticipant(name="没有查到")]
+    async def get_participants(self, page: Page) -> list[MeetingParticipant]:
+        """获取飞书视频会议的参与者列表。"""
+        # 点击数字按钮展开参与者面板（飞书用参会人数作为按钮文字）
+        await page.evaluate("""() => {
+            const btn = [...document.querySelectorAll('button, [role="button"]')]
+                .find(el => /^\\d+$/.test((el.textContent || '').trim()));
+            if (btn) btn.click();
+        }""")
+        await asyncio.sleep(1)
+
+        names: list[str] = await page.evaluate("""() => {
+            const container = document.querySelector('.list_items');
+            if (!container) return [];
+            return [...container.children]
+                .map(el => el.textContent?.trim() || '')
+                .filter(Boolean);
+        }""")
+
+        # 去掉 "(Me)" / "(我)" 等后缀
+        participants = []
+        for name in names:
+            clean = re.sub(r'\s*\([Mm]e\)\s*$|\s*（我）\s*$|\s*\(我\)\s*$', '', name).strip()
+            if clean:
+                participants.append(MeetingParticipant(name=clean))
+
+        logger.info("Participants: %s", [p.name for p in participants])
+        return participants or [MeetingParticipant(name="没有查到")]
 
     async def mute(self, page: Page) -> None:
         """在飞书视频会议中将自己静音。"""
@@ -531,3 +564,50 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
             """,
             own_name,
         )
+
+    async def _dump_participant_dom(self, page: Page) -> None:
+        """入会后 dump 工具栏按钮和参与者面板 DOM，帮助定位正确的 CSS 选择器。"""
+        await asyncio.sleep(3)  # 等待会议 UI 完全渲染
+
+        # Step1：dump 所有按钮文字，找到"成员/参与者"按钮
+        buttons = await page.evaluate("""() => {
+            return [...document.querySelectorAll('button, [role="button"]')].map(el => ({
+                text: el.textContent?.trim().substring(0, 60),
+                ariaLabel: el.getAttribute('aria-label'),
+                className: el.className?.substring(0, 80),
+            })).filter(b => b.text || b.ariaLabel);
+        }""")
+        logger.info("ALL BUTTONS (%d total):", len(buttons))
+        for b in buttons:
+            logger.info("  text=%r aria=%r class=%s", b["text"], b["ariaLabel"], b["className"][:50])
+
+        # Step2：点击数字按钮（飞书用参会人数作为按钮文字）展开参与者面板
+        opened = await page.evaluate("""() => {
+            const btn = [...document.querySelectorAll('button, [role="button"]')]
+                .find(el => /^\\d+$/.test((el.textContent || '').trim()));
+            if (btn) { btn.click(); return btn.textContent?.trim(); }
+            return null;
+        }""")
+        logger.info("Clicked participant count button: %r", opened)
+        await asyncio.sleep(2)
+
+        # Step3：dump 展开后页面中所有包含多个子元素的列表容器
+        panel = await page.evaluate("""() => {
+            const lists = [...document.querySelectorAll('ul, ol, [class*="list"], [class*="panel"], [class*="member"], [class*="roster"]')]
+                .filter(el => el.children.length >= 1);
+            return lists.slice(0, 5).map(el => ({
+                tag: el.tagName,
+                cls: el.className?.substring(0, 100),
+                childCount: el.children.length,
+                childrenText: [...el.children].slice(0, 10).map(c => ({
+                    tag: c.tagName,
+                    cls: c.className?.substring(0, 80),
+                    text: c.textContent?.trim().substring(0, 60),
+                })),
+            }));
+        }""")
+        logger.info("PARTICIPANT PANEL (%d list containers):", len(panel))
+        for container in panel:
+            logger.info("  [%s.%s] %d children:", container["tag"], container["cls"][:60], container["childCount"])
+            for child in container.get("childrenText", []):
+                logger.info("    [%s.%s] %r", child["tag"], child["cls"][:50], child["text"])
