@@ -1,3 +1,13 @@
+"""joinly 命令行入口（Click CLI）。
+
+两种运行模式:
+    - **服务端** (``--server`` 或未传会议 URL): 启动 FastMCP HTTP 服务，
+      供外部 Agent 连接。
+    - **客户端** (传入会议 URL): 调用 ``joinly_client`` 内置 Agent 直接入会。
+
+CLI 参数会合并进 ``Settings`` 并写入 ContextVar；``--stt-arg`` 等可传组件构造参数。
+"""
+
 import asyncio
 import json
 import logging

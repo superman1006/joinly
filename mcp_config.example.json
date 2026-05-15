@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "baidu-search": {
+      "url": "http://appbuilder.baidu.com/v2/ai_search/mcp/sse?api_key=<你的-AppBuilder-API-Key>"
+    }
+  }
+}

@@ -1,6 +1,21 @@
+"""joinly FastMCP 服务端入口。
+
+暴露 MCP 工具（``join_meeting``、``speak_text``、``send_chat_message`` 等）与
+资源（实时转写 ``transcript://live``、用量 ``usage://current``）。
+
+每个 HTTP 客户端连接在 ``session_lifespan`` 中创建独立的 ``MeetingSession``；
+可通过请求头 ``joinly-settings`` 传入 JSON 覆盖 ``Settings``。
+
+运行方式::
+
+    uv run joinly --port 8000          # 仅服务端
+    uv run joinly --client <会议URL>   # 内置 Agent 客户端（见 main.py）
+"""
+
 import base64
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -323,9 +338,7 @@ async def get_participants(
 
 @mcp.tool(
     "get_video_snapshot",
-    description=(
-        "获取当前视频画面快照，包括会议中的参与者摄像头与屏幕共享。"
-    ),
+    description=("获取当前视频画面快照，包括会议中的参与者摄像头与屏幕共享。"),
 )
 async def get_video_snapshot(ctx: Context) -> ImageContent:
     """获取当前视频画面快照。"""
@@ -395,6 +408,38 @@ async def unmute_yourself(
     ms: MeetingSession = ctx.request_context.lifespan_context.meeting_session
     await ms.unmute()
     return "Unmuted yourself."
+
+
+_BAIDU_SEARCH_SSE = "http://appbuilder.baidu.com/v2/ai_search/mcp/sse"
+
+
+@mcp.tool(
+    "web_search",
+    description=(
+        "使用百度 AI 搜索实时查询互联网信息。"
+        "适用于需要最新资讯、查找事实、了解未知概念等场景。"
+        "返回搜索结果摘要文本。"
+    ),
+)
+async def web_search(
+    query: Annotated[str, Field(description="搜索关键词或问题")],
+) -> str:
+    """调用百度 AI 搜索 MCP（SSE 协议）获取实时网络信息。"""
+    from fastmcp import Client
+
+    api_key = os.environ.get("BAIDU_SEARCH_API_KEY", "")
+    if not api_key:
+        return "未配置百度搜索 API Key（环境变量 BAIDU_SEARCH_API_KEY）。"
+
+    url = f"{_BAIDU_SEARCH_SSE}?api_key={api_key}"
+    try:
+        async with Client(url) as client:
+            result = await client.call_tool("AIsearch", {"query": query})
+        texts = [item.text for item in result.content if hasattr(item, "text") and item.text]
+        return "\n".join(texts) if texts else "未获取到搜索结果。"
+    except Exception as e:
+        logger.exception("百度搜索调用异常")
+        return f"百度搜索出错: {e}"
 
 
 @mcp.custom_route("/health", methods=["GET"])

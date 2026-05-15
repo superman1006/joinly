@@ -1,3 +1,12 @@
+"""阿里云智能语音交互（NLS）语音合成 TTS。
+
+实现方式: REST ``/stream/v1/tts`` 一次性合成，响应体为 PCM 流，按块 yield 给
+``DefaultSpeechController``。鉴权与 STT 共用 CreateToken + 三个环境变量。
+
+默认音色 ``aixia``（24kHz 中文女声），与虚拟麦克风采样率一致；勿用仅支持 16kHz
+的基础音色，否则需在管线中做重采样（当前未实现）。
+"""
+
 import base64
 import hashlib
 import hmac

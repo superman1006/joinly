@@ -1,3 +1,9 @@
+"""PCM 音频工具函数。
+
+仅支持**相同采样率**下的 16-bit ↔ 32-bit（int16 ↔ float32）互转；
+采样率不一致时抛出 ``IncompatibleAudioFormatError``（重采样未实现）。
+"""
+
 import numpy as np
 
 from joinly.types import AudioFormat, IncompatibleAudioFormatError

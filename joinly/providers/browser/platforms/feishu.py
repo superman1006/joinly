@@ -1,3 +1,13 @@
+"""飞书视频会议（vc.feishu.cn）浏览器自动化控制器。
+
+职责: 入会/离会、聊天、屏幕共享、当前说话人检测等 DOM 操作。
+依赖 Google Chrome（非 Chromium）通过飞书浏览器检测；Cookie 可通过
+``JOINLY_FEISHU_COOKIES_FILE`` 注入。
+
+入会流程为两段式: 中转页「在浏览器中加入」→ 会议页「加入」按钮。
+聊天使用 ``pre.lark-editor`` 富文本 + ``keyboard.insertText`` 输入。
+"""
+
 import asyncio
 import contextlib
 import json
@@ -340,11 +350,75 @@ class FeishuBrowserPlatformController(BaseBrowserPlatformController):
 
         logger.info("聊天消息已发送: %s", message)
 
-    async def get_chat_history(self, page: Page) -> MeetingChatHistory:  # noqa: ARG002
-        """获取飞书视频会议的聊天历史（暂不支持）。"""
-        return MeetingChatHistory(
-            messages=[MeetingChatMessage(text="没有查到", sender="system")]
-        )
+    async def get_chat_history(self, page: Page) -> MeetingChatHistory:
+        """获取飞书视频会议的聊天历史。
+
+        飞书聊天消息 DOM 结构（虚拟滚动，绝对定位）：
+          .list_items                          — 消息列表容器
+            div[style*="position: absolute"]   — 每条消息的定位包装
+              .gMuC25qV / .EX5rFesn            — 消息气泡外层（收到/发出两种 class）
+                [data-position]                — 气泡内层（稳定属性）
+                  .egkYihyL                    — 发送者昵称
+                  .WO1jtrBH                    — 时间戳
+                  .pJ07o4qa                    — 消息文本（可多个 span 拼接）
+        注：虚拟滚动只渲染可视区域内的消息，滚动到底部后再读可获得更多历史。
+        """
+        await self._open_chat(page)
+        await page.wait_for_timeout(500)
+
+        raw = await page.evaluate("""() => {
+            const results = [];
+            const container = document.querySelector('.list_items');
+            if (!container) return results;
+
+            // 用 data-position 定位每条消息气泡内层（跨越 gMuC25qV / EX5rFesn 两种外层）
+            const bubbles = container.querySelectorAll('[data-position]');
+            for (const bubble of bubbles) {
+                // 消息正文：span.pJ07o4qa（class 名稳定，data-eleid 值是动态哈希不可用）
+                const textParts = [...bubble.querySelectorAll('.pJ07o4qa')]
+                    .map(el => el.textContent.trim())
+                    .filter(t => t.length > 0);
+                const text = textParts.join('\\n');
+                if (!text) continue;
+
+                // 发送者（去除"(我)"/"(Me)"后缀）
+                const senderEl = bubble.querySelector('.egkYihyL');
+                let sender = senderEl ? senderEl.textContent.trim() : '未知';
+                if (sender) {
+                    sender = sender.replace(/\\s*[\\(（][我Mme]+[\\)）]\\s*$/i, '').trim();
+                }
+
+                // 时间戳
+                const tsEl = bubble.querySelector('.WO1jtrBH');
+                const ts = tsEl ? tsEl.textContent.trim() : null;
+
+                results.push({ sender: sender || '未知', text, ts });
+            }
+            return results;
+        }""")
+
+        messages = [
+            MeetingChatMessage(
+                text=m["text"],
+                sender=m["sender"],
+                timestamp=m.get("ts"),
+            )
+            for m in raw
+        ]
+
+        if not messages:
+            # 输出完整 HTML 帮助定位 class 变化
+            debug_html = await page.evaluate("""() => {
+                const c = document.querySelector('[class*="list_items"]');
+                if (!c) return 'list_items not found';
+                const bubbles = c.querySelectorAll('[data-position]');
+                if (!bubbles.length) return 'no [data-position] elements found';
+                return bubbles[bubbles.length - 1].outerHTML;
+            }""")
+            logger.warning("聊天记录为空，最后一条消息 HTML: %s", debug_html)
+
+        logger.info("获取到 %d 条聊天消息", len(messages))
+        return MeetingChatHistory(messages=messages)
 
     async def get_participants(self, page: Page) -> list[MeetingParticipant]:
         """获取飞书视频会议的参与者列表。

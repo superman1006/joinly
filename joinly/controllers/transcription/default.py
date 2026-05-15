@@ -1,3 +1,11 @@
+"""默认转写控制器（DefaultTranscriptionController）。
+
+音频管线: ``AudioReader`` → 格式转换 → ``VAD.stream`` → 按话语分窗 → ``STT.stream``
+→ 写入 ``Transcript`` 并发布 ``segment`` / ``utterance`` 事件。
+
+防回声: ``tts_active_event`` 在 TTS 播放期间为 set，跳过新话语 STT 并丢弃已有结果。
+"""
+
 import asyncio
 import contextlib
 import logging
@@ -15,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 class DefaultTranscriptionController(TranscriptionController):
-    """管理转写流程的类。"""
+    """默认转写流程实现。
+
+    后台 ``_vad_worker`` 持续读取会议音频；检测到话语起止后，为每段话语启动独立
+    ``_stt_utterance`` 任务（并发上限 ``max_stt_tasks``）。
+    """
 
     reader: AudioReader
     vad: VAD
@@ -26,6 +38,7 @@ class DefaultTranscriptionController(TranscriptionController):
         *,
         utterance_tail_seconds: float = 0.6,
         no_speech_event_delay: float = 0.4,
+        barge_in_delay: float = 0.6,
         max_stt_tasks: int = 5,
         window_queue_size: int = 100,
     ) -> None:
@@ -35,11 +48,14 @@ class DefaultTranscriptionController(TranscriptionController):
             utterance_tail_seconds (float): 最后一次检测到语音后，再等待多少秒视为
                 话语结束（默认 0.6）。
             no_speech_event_delay (float): 触发「无语音」事件前的等待秒数（默认 0.4）。
+            barge_in_delay (float): TTS 播放期间，持续多少秒语音才视为打断
+                （默认 0.6，比常规 delay 长一点以过滤回声）。
             max_stt_tasks (int): 并发 STT 任务上限（默认 5）。
             window_queue_size (int): 窗口队列最大长度（默认 100）。
         """
         self.utterance_tail_seconds = float(utterance_tail_seconds)
         self.no_speech_event_delay = float(no_speech_event_delay)
+        self.barge_in_delay = float(barge_in_delay)
         self.max_stt_tasks = max_stt_tasks
         self.window_queue_size = window_queue_size
         self._vad_task: asyncio.Task | None = None
@@ -146,24 +162,31 @@ class DefaultTranscriptionController(TranscriptionController):
         async for window in vad_stream:
             if window.is_speech:
                 last_speech = window.time_ns
+                # 即便 TTS 播放中也要追踪起点，用于 barge-in 检测
+                if utterance_start is None:
+                    utterance_start = window.time_ns
 
             if window.is_speech and self._window_queue is None:
-                # 话语开始
-                logger.debug("Utterance start: %.2fs", window.time_ns / 1e9)
-                utterance_start = window.time_ns
-                if len(self._stt_tasks) >= self.max_stt_tasks:
-                    logger.warning(
-                        "Maximum number of STT tasks reached (%d), dropping window",
-                        self.max_stt_tasks,
-                    )
-                    continue
-
-                self._window_queue = asyncio.Queue[SpeechWindow | None](
-                    maxsize=self.window_queue_size
-                )
-                task = asyncio.create_task(self._stt_utterance(self._window_queue))
-                task.add_done_callback(lambda t: self._stt_tasks.discard(t))
-                self._stt_tasks.add(task)
+                if self.tts_active_event.is_set():
+                    # TTS 播放中：不创建 STT 任务（避免回声被转写），
+                    # 但下面仍会根据 utterance_start 触发 barge-in。
+                    logger.debug("TTS 播放中，跳过创建 STT 任务（保留 barge-in 检测）")
+                else:
+                    logger.debug("Utterance start: %.2fs", window.time_ns / 1e9)
+                    if len(self._stt_tasks) >= self.max_stt_tasks:
+                        logger.warning(
+                            "Maximum number of STT tasks reached (%d), dropping window",
+                            self.max_stt_tasks,
+                        )
+                    else:
+                        self._window_queue = asyncio.Queue[SpeechWindow | None](
+                            maxsize=self.window_queue_size
+                        )
+                        task = asyncio.create_task(
+                            self._stt_utterance(self._window_queue)
+                        )
+                        task.add_done_callback(lambda t: self._stt_tasks.discard(t))
+                        self._stt_tasks.add(task)
 
             if (
                 not window.is_speech
@@ -187,15 +210,25 @@ class DefaultTranscriptionController(TranscriptionController):
                         self._window_queue.put_nowait(None)
                     self._window_queue = None
 
-            if self._window_queue is not None:
-                # 话语进行中
-                if (
-                    utterance_start is not None
-                    and window.is_speech
-                    and (window.time_ns - utterance_start) / 1e9
-                    >= self.no_speech_event_delay
-                ):
+            # barge-in：即使 TTS 播放中（无 window_queue），持续语音也要清除
+            # no_speech_event，让 SpeechController 抛出 SpeechInterruptedError 中断 TTS。
+            # TTS 期间用更长的 barge_in_delay 过滤短促回声。
+            if (
+                utterance_start is not None
+                and window.is_speech
+                and self._no_speech_event.is_set()
+            ):
+                required_delay = (
+                    self.barge_in_delay
+                    if self.tts_active_event.is_set()
+                    else self.no_speech_event_delay
+                )
+                if (window.time_ns - utterance_start) / 1e9 >= required_delay:
+                    if self.tts_active_event.is_set():
+                        logger.info("检测到 barge-in，准备中断 TTS")
                     self._no_speech_event.clear()
+
+            if self._window_queue is not None:
                 try:
                     self._window_queue.put_nowait(window)
                 except asyncio.QueueFull:

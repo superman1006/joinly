@@ -1,3 +1,9 @@
+"""按 MCP 连接隔离的 API 用量统计。
+
+各 STT/TTS 服务在调用后通过 ``add_usage`` 累加字符数等；MCP 资源
+``usage://current`` 供客户端查询。
+"""
+
 import logging
 from contextvars import ContextVar, Token
 

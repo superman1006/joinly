@@ -1,3 +1,13 @@
+"""轻量级异步事件总线。
+
+事件类型:
+    - ``segment``: 每产生一条转写/朗读片段
+    - ``utterance``: 一段用户话语的 STT 全部完成
+
+MCP 资源 ``transcript://live`` 订阅 ``utterance``；``transcript://live/segments``
+订阅 ``segment``，用于向客户端推送增量更新。
+"""
+
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine

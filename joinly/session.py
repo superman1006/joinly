@@ -1,3 +1,12 @@
+"""会议会话编排层（MeetingSession）。
+
+在 ``SessionContainer`` 组装好各组件后，本模块提供面向 MCP 工具的高层 API：
+加入/离开会议、朗读、发聊天、截图、共享屏幕等。
+
+``speak_text`` 会同时触发 TTS 与会议聊天框同步（``_echo_to_chat``），便于飞书等
+场景下参会者看到文字记录。
+"""
+
 import asyncio
 import contextlib
 import logging
@@ -26,7 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 class MeetingSession:
-    """编排会议相关操作。"""
+    """编排会议相关操作的核心类。
+
+    持有 ``MeetingProvider``、转写/语音控制器与 ``EventBus``，是 MCP 工具与底层
+    组件之间的唯一门面（Facade）。
+    """
 
     def __init__(
         self,
@@ -50,6 +63,7 @@ class MeetingSession:
         self._clock: Clock | None = None
         self._transcript: Transcript | None = None
         self._event_bus = EventBus()
+        self._is_muted: bool = False
         # 持有 speak_text 期间发起的聊天发送任务引用，避免被 GC
         self._chat_echo_tasks: set[asyncio.Task[None]] = set()
 
@@ -127,6 +141,7 @@ class MeetingSession:
     async def speak_text(self, text: str) -> None:
         """使用 TTS 朗读给定文本，同时把同一段文本发送到会议聊天框。
 
+        静音状态下跳过 TTS 播放（避免 tts_active_event 阻塞 STT），仅发聊天消息。
         聊天发送以并发任务方式 fire-and-forget 触发，失败仅记日志，不影响 TTS。
         如果语音被打断（SpeechInterruptedError），聊天任务保留运行直至完成或失败。
 
@@ -139,6 +154,10 @@ class MeetingSession:
             )
             self._chat_echo_tasks.add(task)
             task.add_done_callback(self._chat_echo_tasks.discard)
+
+        if self._is_muted:
+            logger.debug("当前处于静音状态，跳过 TTS 播放")
+            return
 
         try:
             await self._speech_controller.speak_text(text)
@@ -205,10 +224,12 @@ class MeetingSession:
     async def mute(self) -> None:
         """在会议中将自己静音。"""
         await self._meeting_provider.mute()
+        self._is_muted = True
 
     async def unmute(self) -> None:
         """在会议中取消静音。"""
         await self._meeting_provider.unmute()
+        self._is_muted = False
 
     async def set_animation(self, animation: ActionAnimation | None) -> None:
         """在会议提供方上设置动作动画。"""

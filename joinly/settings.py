@@ -1,3 +1,12 @@
+"""joinly 运行时配置（Settings）。
+
+通过 ``JOINLY_`` 前缀的环境变量加载，支持嵌套参数（``JOINLY_STT_ARGS__model_name``）。
+每个 MCP 客户端连接可通过 HTTP 头 ``joinly-settings`` 覆盖部分配置（见 ``server.py``）。
+
+使用 ``get_settings()`` / ``set_settings()`` / ``reset_settings()`` 在 ContextVar 中
+按连接隔离配置，保证多客户端并发时互不干扰。
+"""
+
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -15,27 +24,57 @@ from joinly.core import (
 
 
 class Settings(BaseSettings):
-    """会议代理的配置项。"""
+    """会议代理的配置项。
 
-    name: str = Field(default="joinly")
-    language: str = Field(default="en")
-    device: str = Field(default="cpu")
+    短令牌（如 ``stt="aliyun"``）由 ``SessionContainer`` 解析为
+    ``joinly.services.stt.aliyun.AliyunSTT`` 等具体类。
+  """
 
-    meeting_provider: str | type[MeetingProvider] = Field(default="browser")
-    vad: str | type[VAD] = Field(default="silero")
-    stt: str | type[STT] = Field(default="whisper")
-    tts: str | type[TTS] = Field(default="kokoro")
-    transcription_controller: str | type[TranscriptionController] = Field(
-        default="default"
+    name: str = Field(default="joinly", description="会议中显示的参与者名称")
+    language: str = Field(
+        default="en", description="STT/TTS 使用的语言代码（如 zh、en）"
     )
-    speech_controller: str | type[SpeechController] = Field(default="default")
+    device: str = Field(
+        default="cpu", description="本地模型运行设备：cpu 或 cuda"
+    )
 
-    meeting_provider_args: dict[str, Any] = Field(default_factory=dict)
-    vad_args: dict[str, Any] = Field(default_factory=dict)
-    stt_args: dict[str, Any] = Field(default_factory=dict)
-    tts_args: dict[str, Any] = Field(default_factory=dict)
-    transcription_controller_args: dict[str, Any] = Field(default_factory=dict)
-    speech_controller_args: dict[str, Any] = Field(default_factory=dict)
+    meeting_provider: str | type[MeetingProvider] = Field(
+        default="browser", description="会议提供方短令牌或类"
+    )
+    vad: str | type[VAD] = Field(default="silero", description="VAD 短令牌或类")
+    stt: str | type[STT] = Field(
+        default="whisper", description="STT 短令牌（whisper/aliyun/google/deepgram）"
+    )
+    tts: str | type[TTS] = Field(
+        default="kokoro", description="TTS 短令牌（kokoro/aliyun/google/...）"
+    )
+    transcription_controller: str | type[TranscriptionController] = Field(
+        default="default", description="转写控制器短令牌"
+    )
+    speech_controller: str | type[SpeechController] = Field(
+        default="default", description="语音输出控制器短令牌"
+    )
+
+    meeting_provider_args: dict[str, Any] = Field(
+        default_factory=dict, description="传给 MeetingProvider 构造函数的额外参数"
+    )
+    vad_args: dict[str, Any] = Field(
+        default_factory=dict, description="传给 VAD 构造函数的额外参数"
+    )
+    stt_args: dict[str, Any] = Field(
+        default_factory=dict, description="传给 STT 构造函数的额外参数"
+    )
+    tts_args: dict[str, Any] = Field(
+        default_factory=dict, description="传给 TTS 构造函数的额外参数"
+    )
+    transcription_controller_args: dict[str, Any] = Field(
+        default_factory=dict,
+        description="传给 TranscriptionController 的参数（如 utterance_tail_seconds）",
+    )
+    speech_controller_args: dict[str, Any] = Field(
+        default_factory=dict,
+        description="传给 SpeechController 的参数（如 prefetch_chunks）",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="JOINLY_",

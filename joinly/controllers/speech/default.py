@@ -1,3 +1,11 @@
+"""默认语音输出控制器（DefaultSpeechController）。
+
+将 Agent 文本分块 → ``TTS.stream`` 预取 → 格式转换 → ``AudioWriter`` 写入虚拟麦克风。
+支持 barge-in：``no_speech_event`` 被转写控制器清除时中断当前朗读。
+
+``tts_active_event`` 由 container 注入，朗读期间 set，供转写侧抑制回声。
+"""
+
 import asyncio
 import logging
 from typing import Self, cast
@@ -24,7 +32,7 @@ _TEXT_END = object()
 
 
 class DefaultSpeechController(SpeechController):
-    """管理语音输出流程的类。"""
+    """默认 TTS 朗读流程：生产者/消费者双任务，带预取与插话检测。"""
 
     writer: AudioWriter
     tts: TTS

@@ -1,3 +1,16 @@
+"""依赖注入容器（SessionContainer）。
+
+负责根据 ``Settings`` 中的短令牌解析并实例化所有组件，通过 ``AsyncExitStack``
+统一管理异步上下文（模型加载、WebSocket 连接等）的生命周期。
+
+解析约定（``_resolve``）::
+    令牌 ``aliyun`` + 后缀 ``STT`` → ``joinly.services.stt.aliyun.AliyunSTT``
+    令牌 ``browser`` + 后缀 ``MeetingProvider`` → ``joinly.providers.browser...``
+
+组装顺序: VAD → STT → TTS → MeetingProvider → 控制器，再将 reader/writer 与
+VAD/STT/TTS 注入控制器，最后构造 ``MeetingSession``。
+"""
+
 import importlib
 import logging
 import re
@@ -76,10 +89,20 @@ def _resolve(spec: str | type[T], *, base: str, suffix: str) -> type[T]:
 
 
 class SessionContainer:
-    """会议会话（Meeting Session）的容器。"""
+    """会议会话的依赖注入容器。
+
+    作为异步上下文管理器使用::
+
+        async with SessionContainer() as meeting_session:
+            await meeting_session.join_meeting(url)
+    """
 
     def __init__(self, settings: Settings | None = None) -> None:
-        """初始化会话容器。"""
+        """初始化会话容器。
+
+        参数:
+            settings: 可选配置；默认使用 ContextVar 中的 ``get_settings()``。
+        """
         self._settings = settings or get_settings()
         self._stack = AsyncExitStack()
 

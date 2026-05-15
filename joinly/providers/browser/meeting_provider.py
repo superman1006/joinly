@@ -1,3 +1,11 @@
+"""基于 Playwright 的浏览器会议提供方。
+
+虚拟化栈: PulseAudio + Xvfb + Chromium，通过虚拟扬声器/麦克风桥接会议音频。
+按会议 URL 选择平台控制器（Google Meet / Teams / Zoom / 飞书）。
+
+``_action_guard`` 保证同一时刻只有一个 Playwright 页面操作（入会、聊天、离开等）。
+"""
+
 import asyncio
 import io
 import logging

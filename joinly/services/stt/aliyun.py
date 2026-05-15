@@ -1,3 +1,12 @@
+"""阿里云智能语音交互（NLS）实时语音识别 STT。
+
+协议: WebSocket ``SpeechTranscriber``，上海网关；鉴权通过 CreateToken RPC 获取
+短期 token。环境变量: ``ALIYUN_ACCESS_KEY_ID``、``ALIYUN_ACCESS_KEY_SECRET``、
+``ALIYUN_NLS_APP_KEY``。
+
+下行事件: ``SentenceEnd`` 携带整句文本与时间戳；``TranscriptionCompleted`` 结束会话。
+"""
+
 import asyncio
 import base64
 import contextlib
@@ -52,9 +61,14 @@ def _sign_rpc(access_key_id: str, access_key_secret: str) -> dict[str, str]:
 
 
 class AliyunSTT(STT):
-    """使用阿里云实时语音识别（NLS）将音频转写为文字。"""
+    """使用阿里云 NLS WebSocket 将 PCM 音频流实时转写为文字。"""
 
     def __init__(self, *, sample_rate: int = 16000) -> None:
+        """初始化阿里云 STT。
+
+        参数:
+            sample_rate: 上行 PCM 采样率，需与 VAD/reader 一致（默认 16000）。
+        """
         self._access_key_id = os.environ["ALIYUN_ACCESS_KEY_ID"]
         self._access_key_secret = os.environ["ALIYUN_ACCESS_KEY_SECRET"]
         self._app_key = os.environ["ALIYUN_NLS_APP_KEY"]
@@ -174,10 +188,15 @@ class AliyunSTT(STT):
                 recv_task = asyncio.create_task(_recv_loop())
 
                 try:
+                    audio_bytes = 0
                     async for window in windows:
                         if stream_start is None:
                             stream_start = window.time_ns / 1e9
                         await ws.send_bytes(window.data)
+                        audio_bytes += len(window.data)
+
+                    duration_s = audio_bytes / (self._sample_rate * 2)
+                    logger.info("阿里云 STT 发送音频: %.2f 秒 (%d 字节)", duration_s, audio_bytes)
 
                     # 发送 StopTranscription
                     await ws.send_str(_make_msg("StopTranscription"))

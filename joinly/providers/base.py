@@ -1,3 +1,9 @@
+"""会议提供方抽象基类。
+
+未实现的能力统一抛出 ``ProviderNotSupportedError``；具体平台见
+``joinly.providers.browser`` 及各 ``platforms/*`` 控制器。
+"""
+
 from joinly.core import MeetingProvider
 from joinly.types import (
     ActionAnimation,

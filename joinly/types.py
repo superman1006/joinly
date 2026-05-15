@@ -1,3 +1,11 @@
+"""joinly 本地类型与异常定义。
+
+从 ``joinly_common`` 再导出会议/转写相关类型；本模块额外定义:
+    - ``AudioFormat`` / ``AudioChunk`` / ``SpeechWindow``: 音频管线数据结构
+    - ``SpeechInterruptedError``: TTS 被用户插话打断
+    - ``ProviderNotSupportedError`` / ``IncompatibleAudioFormatError``: 能力或格式错误
+"""
+
 from dataclasses import dataclass
 from typing import Literal
 

@@ -1,3 +1,22 @@
+"""joinly 核心协议定义（Protocol）。
+
+本模块是 joinly 的架构契约层，所有可替换组件（VAD、STT、TTS、会议提供方、控制器）
+均通过此处定义的 Protocol 解耦。`SessionContainer` 按短令牌（如 ``"whisper"``、
+``"aliyun"``）动态解析具体实现类。
+
+数据流概览::
+
+    会议音频 → AudioReader → VAD → STT → TranscriptionController → Transcript
+    Agent 文本 → SpeechController → TTS → AudioWriter → 会议麦克风
+
+主要 Protocol:
+    - ``AudioReader`` / ``AudioWriter``: 会议侧 PCM 音频 I/O
+    - ``VAD``: 语音活动检测，输出带 is_speech 标记的窗口
+    - ``STT`` / ``TTS``: 语音转写与合成
+    - ``MeetingProvider``: 加入/离开会议、聊天、静音等平台操作
+    - ``TranscriptionController`` / ``SpeechController``: 转写与朗读流程编排
+"""
+
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Protocol
