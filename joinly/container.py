@@ -1,4 +1,5 @@
 import importlib
+import logging
 import re
 from contextlib import (
     AbstractAsyncContextManager,
@@ -10,7 +11,25 @@ from typing import Any, TypeVar
 from joinly.session import MeetingSession
 from joinly.settings import Settings, get_settings
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T")
+
+
+def _describe(instance: object, args: dict[str, Any]) -> str:
+    """提取实例的关键参数（model/voice 等）用于日志展示。"""
+    keys = ("model", "model_name", "_model", "_model_name", "voice", "_voice")
+    details: list[str] = []
+    for k in ("model", "voice"):
+        if k in args:
+            details.append(f"{k}={args[k]}")
+    if not details:
+        for k in keys:
+            v = getattr(instance, k, None)
+            if isinstance(v, str) and v:
+                details.append(f"{k.lstrip('_')}={v}")
+                break
+    return f"{type(instance).__name__}" + (f"({', '.join(details)})" if details else "")
 
 
 def _resolve(spec: str | type[T], *, base: str, suffix: str) -> type[T]:
@@ -105,6 +124,13 @@ class SessionContainer:
                 "joinly.services.tts",
                 "TTS",
                 self._settings.tts_args,
+            )
+
+            logger.info(
+                "已加载 STT: %s | TTS: %s | VAD: %s",
+                _describe(stt, self._settings.stt_args),
+                _describe(tts, self._settings.tts_args),
+                type(vad).__name__,
             )
 
             provider_extra_args = (

@@ -28,6 +28,7 @@
 
 > [!IMPORTANT]
 > **必须安装**：
+>
 > - [Docker Desktop](https://docs.docker.com/engine/install/) （包含 Docker 引擎）
 > - **至少 50GB 磁盘空间**（镜像 ~2.3GB + ML 模型 ~2GB + 工作目录）
 > - **网络**：能访问 GitHub、PyPI、模型仓库（如需翻墙，请提前开启 VPN）
@@ -35,6 +36,7 @@
 ### 针对飞书用户的额外要求
 
 如果你想使用**飞书**（vc.feishu.cn）：
+
 - **CPU 架构**：需要构建 AMD64 镜像（包含 Google Chrome）
 - **Python 版本**：镜像内固定使用 **Python 3.12**（由 `ENV UV_PYTHON=3.12` 控制）。`onnxruntime==1.21.1` 仅提供 cp312/cp313 wheel，**不支持 Python 3.13+**，请勿随意升级
 - **构建环境**：
@@ -56,6 +58,7 @@ JOINLY_NAME=Joinly AI
 ```
 
 > [!TIP]
+>
 > - OpenAI API 密钥：https://platform.openai.com/api-keys
 > - 完整配置选项见 [.env.example](.env.example)（包括 Claude、Ollama 等）
 
@@ -174,6 +177,7 @@ docker run -d \
 ```
 
 参数说明：
+
 - `-d`：后台运行，终端不会被阻塞
 - `--name joinly-feishu`：指定容器名称，便于后续管理（不加则随机命名）
 - `--env-file .env`：加载配置文件（必须在项目目录下执行）
@@ -201,6 +205,79 @@ Bot 加入会议后会自动：
 ## Cookie 过期
 
 飞书登录会话会在一段时间不活动后过期。如果 Bot 无法加入（卡在登录页），请重新导出 Cookie 并替换 `feishu_cookies.json`。
+
+## 飞书会议接入坑点速查
+
+修改 `joinly/providers/browser/platforms/feishu.py` 时务必注意以下已踩过的坑：
+
+### 1. Landing page「Join On This Browser」按钮（必须用 class 精准匹配）
+
+飞书 landing page 的入会区域 HTML 结构是：
+
+```html
+<div class="btn-container">
+  <button class="...download-btn">Download Feishu</button>
+  <button class="...join-meeting">Join On This Browser</button>
+</div>
+```
+
+**坑**：父容器 `<div class="btn-container">` 的 `textContent` 是两个按钮文本拼接（`"Download FeishuJoin On This Browser"`），如果用 `textContent.includes("Join On This Browser")` 匹配父容器再 `.click()`，会点不中目标按钮。
+
+**解法**：直接 `document.querySelectorAll('button.join-meeting')` 精准点击子按钮，绕开父容器。
+
+### 2. React 组件不挂 `onclick` 属性
+
+飞书是 React 应用，所有点击事件挂在 React fiber 上，**不会**写入 DOM 的 `onclick` 属性。所以：
+
+- ❌ `document.querySelectorAll('div[onclick], span[onclick]')` 永远查不到 React 按钮
+- ✅ 应该用类名（如 `button.join-meeting`、`button.kes3qNGU`）或 SVG 图标（如 `svg[data-icon="MicOffFilled"]`）定位
+
+### 3. 加入弹窗是异步渲染的
+
+`page.goto(url)` 后即使 `networkidle` 已经触发，会议加入弹窗可能仍在 React 异步渲染。直接查 DOM 找不到「在浏览器中加入」按钮。
+
+**解法**：用 `page.wait_for_function(..., arg=pattern, timeout=20000)` 显式等待按钮文字出现（注意 `arg` 必须是关键字参数，不是位置参数）。
+
+### 4. Playwright 可见性检查会卡住自动隐藏的工具栏
+
+飞书会议室的底部工具栏（麦克风、聊天、表情等按钮）会自动隐藏，导致 Playwright `is_visible()` / `click()` 报"element not visible"。
+
+**解法**：所有工具栏按钮一律用 `page.evaluate()` 中的 JS 点击，配合 `getBoundingClientRect()` 自己判断可见性，绕开 Playwright 的稳定性检查。
+
+### 5. lark-editor 富文本输入框
+
+飞书聊天框是 `<pre class="lark-editor" contenteditable>`（ProseMirror 风格），不是普通 textarea：
+
+- ❌ `chat_input.fill(text)` / `press_sequentially(text)` — 不触发 composition events，编辑器不识别
+- ✅ `page.keyboard.insert_text(text)` — IME 风格输入
+- ✅ 发送：先用 `chat_input.press("Enter")`，失败则 JS `dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', ...}))` 兜底
+
+### 6. 已登录用户跳过 join 表单
+
+带有效 cookie 的用户点击「在浏览器中加入」后，可能直接进入会议室，跳过填名字 + 点 Join 的表单。
+
+**解法**：跳转后先用 `_check_joined(page, timeout=3)` 短超时检查是否已经在会议中，是则提前 return，避免后续 `wait_for join button enabled` 卡 30 秒超时报错。
+
+### 7. 不同会议 ID 可能走不同 landing page
+
+不同的会议 ID 渲染的 landing page DOM 可能不同：有的直接显示「在浏览器中加入」，有的先显示首页 + Modal，有的需要更长加载时间。**改动后请用多个会议 ID 实测验证**，不要只测一个就以为通用。
+
+### 标准调试命令
+
+```bash
+docker build --platform linux/amd64 -t joinly-feishu:latest .
+docker stop joinly-feishu-container1 && docker rm joinly-feishu-container1
+docker run -d --name joinly-feishu-container1 \
+  --env-file .env \
+  -v $(pwd)/feishu_cookies.json:/cookies/feishu_cookies.json:ro \
+  joinly-feishu:latest \
+  --client "https://vc.feishu.cn/j/<会议ID>"
+docker logs -f joinly-feishu-container1
+
+# 拷贝调试截图
+docker cp joinly-feishu-container1:/tmp/feishu_step1.png ~/Desktop/
+docker cp joinly-feishu-container1:/tmp/feishu_step2.png ~/Desktop/
+```
 
 ---
 

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -49,6 +50,8 @@ class MeetingSession:
         self._clock: Clock | None = None
         self._transcript: Transcript | None = None
         self._event_bus = EventBus()
+        # 持有 speak_text 期间发起的聊天发送任务引用，避免被 GC
+        self._chat_echo_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def transcript(self) -> Transcript:
@@ -122,17 +125,34 @@ class MeetingSession:
         await self._speech_controller.stop()
 
     async def speak_text(self, text: str) -> None:
-        """使用 TTS 朗读给定文本。
+        """使用 TTS 朗读给定文本，同时把同一段文本发送到会议聊天框。
+
+        聊天发送以并发任务方式 fire-and-forget 触发，失败仅记日志，不影响 TTS。
+        如果语音被打断（SpeechInterruptedError），聊天任务保留运行直至完成或失败。
 
         参数:
             text (str): 要朗读的文本。
         """
+        if text.strip():
+            task = asyncio.create_task(
+                self._echo_to_chat(text), name="speak_text_chat_echo"
+            )
+            self._chat_echo_tasks.add(task)
+            task.add_done_callback(self._chat_echo_tasks.discard)
+
         try:
             await self._speech_controller.speak_text(text)
         except SpeechInterruptedError:
             await self.set_animation("interrupted")
             await self.set_animation(None)
             raise
+
+    async def _echo_to_chat(self, text: str) -> None:
+        """把 TTS 文本同步发送到会议聊天框，异常仅记日志。"""
+        try:
+            await self._meeting_provider.send_chat_message(text)
+        except Exception:  # noqa: BLE001
+            logger.warning("将朗读文本同步到聊天框失败", exc_info=True)
 
     async def send_chat_message(self, message: str) -> None:
         """在会议中发送聊天消息。

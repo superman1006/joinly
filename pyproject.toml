@@ -2,7 +2,6 @@
 name = "joinly"
 version = "0.5.3"
 description = "Make your meetings accessible to AI Agents"
-readme = "README.md"
 authors = [
     { name = "dbrockmann", email = "dominik@joinly.ai" }
 ]

@@ -99,8 +99,8 @@ WORKDIR /app
 # 关键：先复制不常变的文件，后复制常变的文件
 # 这样只改业务代码时，下面的 RUN uv sync 层不会失效，直接走缓存
 
-# 复制 uv workspace 配置文件
-COPY pyproject.toml uv.lock README.md ./
+# 复制 uv workspace 配置文件（不含 README.md，避免文档改动触发依赖重装）
+COPY pyproject.toml uv.lock ./
 # 复制三个 workspace 子包的配置
 COPY common/ common/
 COPY client/ client/
@@ -113,28 +113,31 @@ COPY scripts/ scripts/
 # 缓存关键：此层在 "COPY joinly/" 之前，确保代码变化不会触发重新依赖安装
 # --frozen：只使用 uv.lock 中锁定的版本，不升级任何包
 # --no-dev：不安装开发依赖（pytest、ruff 等），减小镜像大小
-
 RUN uv sync --frozen --no-dev
 
 # ────────────────────────────────────────────────────────────────────────────
 # 9. 下载 ML 模型（~2GB）
 # ────────────────────────────────────────────────────────────────────────────
 # 模型包括：
-#   - Whisper (base)：语音转文本，~140MB
-#   - Kokoro v1.0：文本转语音，~900MB
+#   - Whisper distil-large-v3：语音转文字（中文），~750MB，large-v3 蒸馏版，速度 3x
 #   - Silero VAD：语音活动检测，~40MB
+# 不下载 Kokoro（TTS 已切换为 Google Gemini TTS，运行时联网调用，无需本地模型）
 # 缓存机制：此层依赖 uv sync，只改代码时走缓存
-# 首次下载需要网络访问模型仓库（Hugging Face 等），可能需要 5-10 分钟
+# 首次下载需要网络访问 Hugging Face，可能需要 10-20 分钟
 
-RUN uv run scripts/download_assets.py
+RUN uv run scripts/download_assets.py \
+    --assets whisper silero \
+    --whisper-model distil-large-v3
 
 # ────────────────────────────────────────────────────────────────────────────
 # 10. 复制主包源码（最后一步，频繁变动）
 # ────────────────────────────────────────────────────────────────────────────
 # 策略：将常变的代码放在最后，不影响前面的缓存层
 # 好处：只修改 joinly/ 代码时，前面的 Python/模型 层全部走缓存，重建只需 3-5 秒
+# README.md 也放在这里：文档改动与代码改动等价，不触发依赖重装
 
 COPY joinly/ joinly/
+COPY README.md ./
 
 # ────────────────────────────────────────────────────────────────────────────
 # 11. 复制资源文件（Logo、图标等）
