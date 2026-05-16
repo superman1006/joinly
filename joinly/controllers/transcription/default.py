@@ -3,7 +3,13 @@
 音频管线: ``AudioReader`` → 格式转换 → ``VAD.stream`` → 按话语分窗 → ``STT.stream``
 → 写入 ``Transcript`` 并发布 ``segment`` / ``utterance`` 事件。
 
-防回声: ``tts_active_event`` 在 TTS 播放期间为 set，跳过新话语 STT 并丢弃已有结果。
+防回声 + Barge-in：
+    ``tts_active_event`` 在 TTS 播放期间为 set。此期间：
+    1. 不创建新的 STT 任务（避免 bot 自身回声被转写），
+    2. 已收到的 STT 结果被丢弃，
+    3. 但 VAD 仍在工作；用户持续说话超过 ``barge_in_delay`` 秒时
+       清除 ``no_speech_event`` —— ``DefaultSpeechController`` 检测到后
+       抛出 ``SpeechInterruptedError`` 中断当前 TTS。
 """
 
 import asyncio
@@ -134,7 +140,16 @@ class DefaultTranscriptionController(TranscriptionController):
         self._event_bus.publish(event_type)
 
     async def _vad_worker(self) -> None:  # noqa: C901, PLR0915
-        """处理音频数据供 VAD 使用并启动话语级 STT。"""
+        """主循环：把音频喂给 VAD，按话语切分后启动 STT 任务并维护 barge-in 信号。
+
+        关键状态变量：
+            ``last_speech``: 最近一次检测到语音的时间戳。用于判定话语结束
+                （连续静音超过 ``utterance_tail_seconds``）。
+            ``utterance_start``: 当前话语的起点。**TTS 期间也会被赋值**，
+                用于在持续语音 ≥ ``barge_in_delay`` 时触发打断。
+            ``self._window_queue``: 当前活跃的 STT 任务队列；TTS 播放期间不创建
+                （保持 ``None``），避免回声被转写。
+        """
         self._window_queue = None
         last_speech: int | None = None
         utterance_start: int | None = None

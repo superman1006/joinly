@@ -410,6 +410,8 @@ async def unmute_yourself(
     return "Unmuted yourself."
 
 
+# 百度 AppBuilder AI 搜索的 SSE MCP 端点
+# 工具名为 "AIsearch"（区分大小写，非 ai_search/AI_search）
 _BAIDU_SEARCH_SSE = "http://appbuilder.baidu.com/v2/ai_search/mcp/sse"
 
 
@@ -424,7 +426,11 @@ _BAIDU_SEARCH_SSE = "http://appbuilder.baidu.com/v2/ai_search/mcp/sse"
 async def web_search(
     query: Annotated[str, Field(description="搜索关键词或问题")],
 ) -> str:
-    """调用百度 AI 搜索 MCP（SSE 协议）获取实时网络信息。"""
+    """调用百度 AI 搜索 MCP（SSE 协议）获取实时网络信息。
+
+    需要在环境变量 ``BAIDU_SEARCH_API_KEY`` 中配置百度 AppBuilder API Key。
+    使用 fastmcp.Client 而非手动 POST，以正确处理 SSE 协议握手与流式事件。
+    """
     from fastmcp import Client
 
     api_key = os.environ.get("BAIDU_SEARCH_API_KEY", "")
